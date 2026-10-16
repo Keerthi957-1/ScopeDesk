@@ -15,7 +15,7 @@ router.get("/", (req, res) => {
 router.post("/signup", async (req, res) => {
   try {
     const { username, email, password, role,organization } = req.body;
-    console.log("Signup request body:", req.body);
+    
 
     if (
   typeof username !== "string" ||
