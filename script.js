@@ -75,13 +75,15 @@ document.addEventListener('DOMContentLoaded', () => {
             authFormSubtitle.textContent = "Specify your workspace role category to instantiate appropriate authorization profile tiers.";
             authToggleText.textContent = "Already have an account?";
             btnSwitchAuthMode.textContent = "Sign in →";
-            roleSelectorGroup.classList.remove('hidden');
+            roleSelectorGroup.classList.remove('hidden')
+            document.getElementById('emailGroup')?.classList.remove('hidden');
         } else {
             authFormTitle.textContent = "Sign in to ScopeDesk";
             authFormSubtitle.textContent = "Your secure remote support hub, with clear constraints.";
             authToggleText.textContent = "New to ScopeDesk?";
             btnSwitchAuthMode.textContent = "Create an account →";
             roleSelectorGroup.classList.add('hidden');
+                        document.getElementById('emailGroup')?.classList.add('hidden');
         }
     });
 
@@ -97,22 +99,45 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Form confirmation processing loop
-    authForm.addEventListener('submit', (e) => {
+       authForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const structuralName = authUsername.value.trim() || 'User';
-        
-        // Auto-assign logical role context for fast peer previewing 
-        let calculatedRole = registrationActiveState ? fallbackSelectedRole : 'client';
-        if (!registrationActiveState && structuralName.toLowerCase().includes('vendor')) {
-            calculatedRole = 'vendor';
-        }
-        
-        ENGINE_STATE.activeUser = {
-            username: structuralName,
-            role: calculatedRole
-        };
+                alert('Button clicked: new code is running');
 
-        bootApplicationEnvironment();
+        const username = authUsername.value.trim();
+        const password = document.getElementById('authPassword').value;
+    
+                const emailBox = document.getElementById('authEmail');
+        const email = emailBox ? emailBox.value.trim() : '';
+
+        const url = registrationActiveState ? '/api/register' : '/api/login';
+        const body = registrationActiveState
+            ? { username, email, password, role: fallbackSelectedRole, organization: null }
+            : { username, password };
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                alert(data.error || 'Something went wrong');
+                return;
+            }
+
+            if (registrationActiveState) {
+                alert('Account created! Please sign in.');
+                btnSwitchAuthMode.click();
+                return;
+            }
+
+            ENGINE_STATE.activeUser = { username: data.username, role: data.role };
+            bootApplicationEnvironment();
+        } catch (err) {
+            alert('Cannot reach the server. Is "node server.js" running?');
+        }
     });
 
     // Clean structural user session termination
