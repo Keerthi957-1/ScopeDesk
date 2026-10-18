@@ -64,24 +64,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const lblScopeToken = document.getElementById('lblScopeToken');
 
     let registrationActiveState = false;
-    const registrationFields = document.createElement("div");
-registrationFields.id = "registrationFields";
-registrationFields.className = "hidden";
-
-registrationFields.innerHTML = `
-  <div class="form-group">
-    <label for="authEmail">Email address</label>
-    <input type="email" id="authEmail"
-           placeholder="you@example.com">
-  </div>
-  <div class="form-group">
-    <label for="authOrganization">Organization</label>
-    <input type="text" id="authOrganization"
-           placeholder="Your organization">
-  </div>
-`;
-
-roleSelectorGroup.insertAdjacentElement("afterend", registrationFields);
     let fallbackSelectedRole = 'client';
 
     // ================= 1. SECURITY SYSTEM GATEWAY ROUTINES =================
@@ -93,14 +75,15 @@ roleSelectorGroup.insertAdjacentElement("afterend", registrationFields);
             authFormSubtitle.textContent = "Specify your workspace role category to instantiate appropriate authorization profile tiers.";
             authToggleText.textContent = "Already have an account?";
             btnSwitchAuthMode.textContent = "Sign in →";
-            roleSelectorGroup.classList.remove('hidden');
+            roleSelectorGroup.classList.remove('hidden')
+            document.getElementById('emailGroup')?.classList.remove('hidden');
         } else {
             authFormTitle.textContent = "Sign in to ScopeDesk";
             authFormSubtitle.textContent = "Your secure remote support hub, with clear constraints.";
             authToggleText.textContent = "New to ScopeDesk?";
             btnSwitchAuthMode.textContent = "Create an account →";
             roleSelectorGroup.classList.add('hidden');
-            registrationFields.classList.add("hidden");
+                        document.getElementById('emailGroup')?.classList.add('hidden');
         }
     });
 
@@ -116,90 +99,44 @@ roleSelectorGroup.insertAdjacentElement("afterend", registrationFields);
     });
 
     // Form confirmation processing loop
-    // Real backend authentication
-    const API_BASE = 'https://scopedesk-api-production.up.railway.app/api/auth';
-
-    authForm.addEventListener('submit', async (e) => {
+       authForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+                alert('Button clicked: new code is running');
 
         const username = authUsername.value.trim();
         const password = document.getElementById('authPassword').value;
-        const emailInput = document.getElementById('authEmail');
-        const organizationInput = document.getElementById('authOrganization');
+    
+                const emailBox = document.getElementById('authEmail');
+        const email = emailBox ? emailBox.value.trim() : '';
 
-        const submitButton = document.getElementById('btnSubmitAuth');
-        const originalButtonText = submitButton.textContent;
-
-        const selectedRole = document.querySelector(
-            'input[name="accountRole"]:checked'
-        );
-
-        const payload = {
-            username,
-            password
-        };
-
-        const endpoint = registrationActiveState ? '/signup' : '/login';
-
-        if (registrationActiveState) {
-            if (!emailInput || !emailInput.value.trim()) {
-                alert('Please enter your email address. The registration form needs an email field.');
-                return;
-            }
-
-            payload.email = emailInput.value.trim();
-            payload.role = selectedRole ? selectedRole.value : fallbackSelectedRole;
-            payload.organization = organizationInput
-                ? organizationInput.value.trim()
-                : '';
-        }
-
-        submitButton.disabled = true;
-        submitButton.textContent = registrationActiveState
-            ? 'Creating account...'
-            : 'Signing in...';
+        const url = registrationActiveState ? '/api/register' : '/api/login';
+        const body = registrationActiveState
+            ? { username, email, password, role: fallbackSelectedRole, organization: null }
+            : { username, password };
 
         try {
-            const response = await fetch(`${API_BASE}${endpoint}`, {
+            const response = await fetch(url, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
             });
-
             const data = await response.json();
 
             if (!response.ok) {
-                alert(data.message || 'Authentication failed.');
+                alert(data.error || 'Something went wrong');
                 return;
             }
 
             if (registrationActiveState) {
-                alert('Account created! Please sign in with your new username and password.');
-                registrationActiveState = false;
-                authFormTitle.textContent = 'Sign in to ScopeDesk';
-                authFormSubtitle.textContent = 'Your secure remote support hub, with clear constraints.';
-                authToggleText.textContent = 'New to ScopeDesk?';
-                btnSwitchAuthMode.textContent = 'Create an account →';
-                roleSelectorGroup.classList.add('hidden');
-                submitButton.textContent = 'Sign In to Dashboard →';
+                alert('Account created! Please sign in.');
+                btnSwitchAuthMode.click();
                 return;
             }
 
-            ENGINE_STATE.activeUser = {
-                username: data.user.username,
-                role: data.user.role
-            };
-
+            ENGINE_STATE.activeUser = { username: data.username, role: data.role };
             bootApplicationEnvironment();
-
-        } catch (error) {
-            console.error('Authentication request failed:', error);
-            alert('Could not contact the backend. Check your connection and backend deployment.');
-        } finally {
-            submitButton.disabled = false;
-            submitButton.textContent = originalButtonText;
+        } catch (err) {
+            alert('Cannot reach the server. Is "node server.js" running?');
         }
     });
 
