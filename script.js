@@ -101,7 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Form confirmation processing loop
        authForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-                alert('Button clicked: new code is running');
+               
 
         const username = authUsername.value.trim();
         const password = document.getElementById('authPassword').value;
@@ -109,7 +109,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const emailBox = document.getElementById('authEmail');
         const email = emailBox ? emailBox.value.trim() : '';
 
-        const url = registrationActiveState ? '/api/register' : '/api/login';
+        const url = registrationActiveState
+  ? 'https://scopedesk-api-production.up.railway.app/api/auth/signup'
+  : 'https://scopedesk-api-production.up.railway.app/api/auth/login';
         const body = registrationActiveState
             ? { username, email, password, role: fallbackSelectedRole, organization: null }
             : { username, password };
@@ -133,7 +135,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            ENGINE_STATE.activeUser = { username: data.username, role: data.role };
+            const user = data.user || data;
+ENGINE_STATE.activeUser = {
+  username: user.username,
+  role: user.role
+};
             bootApplicationEnvironment();
         } catch (err) {
             alert('Cannot reach the server. Is "node server.js" running?');
