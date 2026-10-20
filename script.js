@@ -125,7 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             if (!response.ok) {
-                alert(data.error || 'Something went wrong');
+                alert(data.message || data.error || 'Something went wrong');
                 return;
             }
 
