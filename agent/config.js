@@ -10,6 +10,7 @@
 //   ALWAYS_ALLOW           comma list of extra app names that may be in front (e.g. "explorer"). Leave empty for strict mode.
 //   VIEW_ONLY=true         never apply vendor input; only monitor
 //   DEBUG_FOREGROUND=true  log the app name active-win reports, to find the right value for the task's approved app
+//   SESSION_CONFIG=file    per-session policy file: {taskId, scope, allowedProcesses, allowedDirectories}. Overrides policies.json
 //   BRIDGE_PORT=47600      local port the browser uses to hand data-channel input to this agent
 const normalize = (name) => String(name || '').toLowerCase().replace(/\.(exe|app)$/i, '').replace(/\s+/g, '').trim();
 
@@ -22,6 +23,7 @@ module.exports = {
   ALWAYS_ALLOW: (process.env.ALWAYS_ALLOW || '').split(',').map((s) => s.trim()).filter(Boolean),
   VIEW_ONLY: process.env.VIEW_ONLY === 'true',
   DEBUG_FOREGROUND: process.env.DEBUG_FOREGROUND === 'true', // print the app name/path active-win sees whenever it changes
+  SESSION_CONFIG: process.env.SESSION_CONFIG || '', // optional path to a per-session JSON file (see session.example.json)
   BRIDGE_PORT: Number(process.env.BRIDGE_PORT || 47600),
   ALLOWED_ORIGINS: (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
   normalize

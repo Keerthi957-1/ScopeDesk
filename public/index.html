@@ -155,6 +155,18 @@
 
         <!-- Main Fluid Panes Workspace -->
         <main class="main-content">
+            <!-- CLIENT: persistent breach banner. Stays on the dashboard until the Client terminates or resumes. -->
+            <div id="breachBanner" class="breach-banner hidden" role="alert" aria-live="assertive">
+                <div class="breach-text">
+                    <strong>⚠ SECURITY BREACH: the vendor's control is frozen</strong>
+                    <span id="breachWhat">-</span>
+                </div>
+                <div class="breach-actions">
+                    <button type="button" class="btn-danger btn-terminate-big" id="btnBreachTerminate">Terminate Connection</button>
+                    <button type="button" class="btn-ghost" id="btnBreachResume">Resume session</button>
+                </div>
+            </div>
+
             <!-- CLIENT: live session bar (shown while a vendor is connected) -->
             <div id="liveBar" class="live-bar hidden" role="status">
                 <div class="live-bar-info">
@@ -167,7 +179,8 @@
                 <div class="live-bar-actions">
                     <button type="button" class="btn-primary" id="btnShareScreen">Share my screen</button>
                     <button type="button" class="btn-ghost" id="btnPairAgent">Pair host agent</button>
-                    <button type="button" class="btn-danger btn-end-session" id="btnLiveTerminate">End Session</button>
+                    <button type="button" class="btn-ghost hidden" id="btnEnableAlerts">Enable alerts</button>
+                    <button type="button" class="btn-danger btn-end-session" id="btnLiveTerminate">Terminate Connection</button>
                 </div>
             </div>
 
@@ -361,11 +374,32 @@
                             <option value="Resolve System Database Synchronization Lag Profiles">Resolve System Database Synchronization Lag Profiles (ERP)</option>
                             <option value="Configure Split-Tunnel OpenVPN Gateway Routings">Configure Split-Tunnel OpenVPN Gateway Routings (VPN)</option>
                             <option value="Re-Route IMAP Server DNS Record Pointers">Re-Route IMAP Server DNS Record Pointers (Email issues)</option>
+                            <option value="__custom__">Custom task... (describe your own)</option>
                         </select>
+                    </div>
+                    <div class="form-group hidden" id="customTitleGroup">
+                        <label for="customTitle">Describe the task</label>
+                        <input type="text" id="customTitle" maxlength="200" placeholder="e.g. Repair the Acme payroll export">
                     </div>
                     <div class="form-group">
                         <label for="taskProcess">Allowed Application (process name, e.g. billing.exe)</label>
                         <input type="text" id="taskProcess" required maxlength="255" placeholder="billing.exe">
+                    </div>
+                    <div class="form-group">
+                        <label for="taskType">Task type (optional, restricts folders)</label>
+                        <input type="text" id="taskType" maxlength="64" placeholder="Billing" list="taskTypeList">
+                        <datalist id="taskTypeList"></datalist>
+                        <small id="taskTypeHint">A name from <code>agent/policies.json</code>. It lists the folders and apps the vendor may use. Upper or lower case does not matter.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="customPaths">Allowed folders (optional, one per line)</label>
+                        <textarea id="customPaths" rows="3" maxlength="2600" placeholder="C:\Clients\Acme&#10;%USERPROFILE%\Documents\Reports"></textarea>
+                        <small>Added to the task type's folders, or used alone for a custom task. The vendor can open only these folders (and their sub-folders) in the file manager. The file manager is allowed automatically.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="customApps">Extra allowed applications (optional, comma separated)</label>
+                        <input type="text" id="customApps" maxlength="700" placeholder="notepad.exe, Excel">
+                        <small>Besides the Allowed Application above. Anything not listed counts as a violation.</small>
                     </div>
                     <div class="form-group">
                         <label for="taskWindow">Access Time Window</label>
@@ -449,11 +483,13 @@
             <div class="violation-details">
                 <div><strong>Task:</strong> <span id="violationTask">-</span></div>
                 <div><strong>Vendor:</strong> <span id="violationVendor">-</span></div>
+                <div><strong>What happened:</strong> <span id="violationWhat">-</span></div>
                 <div><strong>Accessed:</strong> <code id="violationProcess">-</code></div>
             </div>
             <div class="violation-actions">
-                <button type="button" class="btn-danger" id="btnTerminateNow">End Session Now</button>
+                <button type="button" class="btn-danger" id="btnTerminateNow">Terminate Connection</button>
                 <button type="button" class="btn-ghost" id="btnDismissViolation">Resume session</button>
+                <button type="button" class="btn-ghost" id="btnReviewViolation">Review</button>
             </div>
         </div>
     </div>
@@ -486,6 +522,8 @@
                 <p class="cmd-label">First time only, in the <code>agent</code> folder: <code>npm install</code></p>
                 <p class="cmd-label">Windows (Command Prompt)</p>
                 <pre class="cmd-box" id="cmdWindows"></pre>
+                <p class="cmd-label">Easiest: double-click <code>agent/start-agent-windows.bat</code> (or <code>start-agent-mac-linux.command</code>) and paste this token when asked</p>
+                <pre class="cmd-box" id="cmdToken"></pre>
                 <p class="cmd-label">Mac / Linux</p>
                 <pre class="cmd-box" id="cmdUnix"></pre>
                 <div id="agentError" class="auth-error hidden" role="alert"></div>
@@ -498,7 +536,8 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="status-monitor.js?v=1"></script>
-    <script src="webrtc.js?v=2"></script>
+    <script src="remote-input.js?v=1"></script>
+    <script src="webrtc.js?v=3"></script>
     <script src="script.js?v=6"></script>
 </body>
 </html>

@@ -14,6 +14,8 @@ const cfg = require('./config');
 const { ForegroundMonitor } = require('./monitor');
 const { InputInjector } = require('./input-injector');
 const { startBridge } = require('./bridge');
+const { loadPolicy } = require('./policy');
+const { createPathProbe } = require('./path-probe');
 
 const stamp = () => new Date().toLocaleTimeString();
 const log = (level, msg) => (level === 'warn' || level === 'error' ? console.error : console.log)(`[AGENT ${stamp()}] ${msg}`);
@@ -42,16 +44,23 @@ socket.on('connect', () => {
     started = true;
     taskId = res.taskId;
 
-    const approved = [res.targetProcess, ...cfg.ALWAYS_ALLOW];
+    let policy;
+    try { policy = loadPolicy({ taskType: res.taskType, targetProcess: res.targetProcess, taskId: res.taskId, extra: { allowedPaths: res.allowedPaths, allowedApps: res.allowedApps }, sessionConfigFile: cfg.SESSION_CONFIG, log }); }
+    catch (e) { return shutdown(1, 'Could not load the security policy: ' + e.message); }
+    cfg.ALWAYS_ALLOW.forEach((a) => { policy.apps.add(cfg.normalize(a)); policy.appList.push(a); });
+    const probe = createPathProbe(log);
+    if (policy.allowedPaths.length && !probe.supported) {
+      return shutdown(1, `Policy "${policy.name}" restricts folders, but this operating system cannot report which folder a window shows. Refusing to start (a weaker check would be unsafe).`);
+    }
     monitor = new ForegroundMonitor({
-      allowedNames: approved, pollMs: cfg.POLL_MS, strikes: cfg.STRIKES, attributionMs: cfg.ATTRIBUTION_MS, log,
+      policy, probe, pollMs: cfg.POLL_MS, strikes: cfg.STRIKES, attributionMs: cfg.ATTRIBUTION_MS, log,
       debug: cfg.DEBUG_FOREGROUND,
-      onState: (state) => { log('info', `State: ${state}`); socket.emit('agent-state', { taskId, state }); if (bridge) bridge.broadcast({ t: 'state', state }); if (state === 'locked') injector.releaseAll(); },
-      onViolation: (processName) => {
-        log('error', `VIOLATION: "${processName}" is not approved for this task. Input locked, reporting.`);
+      onState: (state) => { log('info', `State: ${state}`); socket.emit('agent-state', { taskId, state, policy: policy.name }); if (bridge) bridge.broadcast({ t: 'state', state }); if (state === 'locked') injector.releaseAll(); },
+      onViolation: ({ processName, kind, detail }) => {
+        log('error', `VIOLATION (${kind}): ${processName}${detail ? ' -> ' + detail : ''}. Input locked, reporting.`);
         process.stdout.write('\x07'); // audible bell
-        if (bridge) bridge.broadcast({ t: 'halt', reason: 'violation' }); // the Client's browser drops the WebRTC link NOW, before the server round trip
-        socket.emit('host-violation', { taskId, processName }, (ack) => { if (ack && !ack.ok) log('warn', 'Server did not accept the report: ' + ack.error); });
+        if (bridge) bridge.broadcast({ t: 'halt', reason: 'violation', kind, detail }); // the Client's browser drops the WebRTC link NOW, before the server round trip
+        socket.emit('host-violation', { taskId, processName, kind, detail }, (ack) => { if (ack && !ack.ok) log('warn', 'Server did not accept the report: ' + ack.error); });
       }
     });
     injector = new InputInjector({ monitor, log, viewOnly: cfg.VIEW_ONLY });
@@ -70,8 +79,9 @@ socket.on('connect', () => {
 
     await monitor.start();
     if (res.halted) monitor.lock();
-    log('info', `Task #${taskId} "${res.title}". Approved app: ${approved.join(', ')}. Open it now so the session can start.`);
-    socket.emit('agent-state', { taskId, state: monitor.state });
+    log('info', `Task #${taskId} "${res.title}". Policy: ${policy.name}. Allowed apps: ${policy.appList.join(', ')}.` + (policy.allowedPaths.length ? ` Allowed folders: ${policy.allowedPaths.join(' | ')}.` : ''));
+    log('info', 'Open an allowed app (or an allowed folder in the file manager) so the session can start.');
+    socket.emit('agent-state', { taskId, state: monitor.state, policy: policy.name });
 
     // Defence in depth: also stop locally when the window ends, even if the server cannot be reached
     const msLeft = Date.parse(res.windowEnd) - (Date.now() + (res.serverTime - Date.now()));

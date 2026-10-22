@@ -536,7 +536,12 @@ document.addEventListener('DOMContentLoaded', () => {
         $('violationMessage').textContent = alert.message || 'Vendor accessed unauthorized data!';
         $('violationTask').textContent = alert.taskTitle || `#${alert.taskId}`;
         $('violationVendor').textContent = alert.vendor || 'Assigned vendor';
-        $('violationProcess').textContent = alert.processName || 'unknown';
+        $('violationWhat').textContent = alert.what || 'An app outside the approved scope was brought to the front.';
+        $('violationProcess').textContent = alert.detail ? `${alert.processName || 'unknown'} -> ${alert.detail}` : (alert.processName || 'unknown');
+        notifyViolation(alert);
+        $('breachWhat').textContent = `${alert.vendor || 'The vendor'}: ${alert.what || alert.processName || 'out-of-scope activity'}`;
+        $('breachBanner').classList.remove('hidden');
+        ['btnDismissViolation', 'btnBreachResume'].forEach((id) => $(id).classList.toggle('hidden', alert.canResume === false)); // permanent lockout: Terminate is the only choice
         violationModal.classList.add('open');
         violationBox.classList.remove('open-shake');
         void violationBox.offsetWidth; // restart shake animation
@@ -544,8 +549,26 @@ document.addEventListener('DOMContentLoaded', () => {
         loadTasks();
     }
 
+    // Browser notification, so the alert is seen even when ScopeDesk is not the window in front
+    // (permission has to be granted from a click: see the "Enable alerts" button)
+    function notifyViolation(alert) {
+        try {
+            if (!('Notification' in window) || Notification.permission !== 'granted') return;
+            const n = new Notification('ScopeDesk: access terminated', {
+                body: `${alert.vendor || 'The vendor'}: ${alert.what || alert.processName || 'out-of-scope activity'}. Open ScopeDesk to terminate access.`,
+                tag: 'scopedesk-violation', requireInteraction: true
+            });
+            n.onclick = () => { window.focus(); n.close(); };
+        } catch (_) { /* the on-page alert still shows */ }
+    }
+    function syncAlertsButton() {
+        const b = $('btnEnableAlerts');
+        if (b) b.classList.toggle('hidden', !('Notification' in window) || Notification.permission !== 'default');
+    }
+
     function closeViolationModal() {
         violationModal.classList.remove('open');
+        $('breachBanner').classList.add('hidden');
         STATE.pendingViolation = null;
     }
 
@@ -562,18 +585,25 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    $('btnTerminateNow').addEventListener('click', () => {
+    // Two places offer the same decision: the alert dialog and the persistent banner on the dashboard
+    function terminateFromAlert() {
         if (!STATE.pendingViolation) return;
         terminateTask(STATE.pendingViolation.taskId, closeViolationModal);
-    });
-    $('btnDismissViolation').addEventListener('click', () => {
-        // "Resume session": the Client accepts the risk, the vendor's control is re-enabled (agent waits for the approved app again)
+    }
+    function resumeFromAlert() {
+        // "Resume session": the Client accepts the risk, the vendor's control is re-enabled (agent waits for an in-scope window again)
         const alert = STATE.pendingViolation;
         if (alert && STATE.socket) STATE.socket.emit('resume-after-violation', { taskId: alert.taskId }, (res) => {
-            toast(res && res.ok ? 'Session resumed. Bring the approved app to the front to re-enable control.' : 'Could not resume. The session may have ended.', !(res && res.ok));
+            toast(res && res.ok ? 'Session resumed. Share your screen again and bring the approved app to the front.' : 'Could not resume. The session may have ended.', !(res && res.ok));
         });
         closeViolationModal();
-    });
+    }
+    $('btnTerminateNow').addEventListener('click', terminateFromAlert);
+    $('btnBreachTerminate').addEventListener('click', terminateFromAlert);
+    $('btnDismissViolation').addEventListener('click', resumeFromAlert);
+    $('btnBreachResume').addEventListener('click', resumeFromAlert);
+    // "Review": close the dialog but keep the banner, so the Client can look at the dashboard and still decide
+    $('btnReviewViolation').addEventListener('click', () => violationModal.classList.remove('open'));
 
     // ================= 5. TASKS (both roles) =================
     async function loadTasks() {
@@ -606,7 +636,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const canTerminate = t.status === 'pending' || t.status === 'active';
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td class="bold">${esc(t.title)}<br><small>${esc(t.target_process)}</small></td>
+                    <td class="bold">${esc(t.title)}<br><small>${esc(t.target_process)}${t.task_type ? ' · ' + esc(t.task_type) : ''}${t.allowed_paths || t.allowed_apps ? ' · custom scope' : ''}</small></td>
                     <td>${esc(t.vendor_name)}</td>
                     <td><code class="token-code">${esc(t.token)}</code></td>
                     <td>${statusBadge(t)}</td>
@@ -621,7 +651,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const canAccept = t.status === 'pending' && t.assigned_vendor_user_id === STATE.user.id;
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td class="bold">${esc(t.title)}<br><small>${esc(t.target_process)}</small></td>
+                    <td class="bold">${esc(t.title)}<br><small>${esc(t.target_process)}${t.task_type ? ' · ' + esc(t.task_type) : ''}${t.allowed_paths || t.allowed_apps ? ' · custom scope' : ''}</small></td>
                     <td>${esc(t.client_org || 'Client')}</td>
                     <td>${statusBadge(t)}</td>
                     <td>${live ? `<button class="btn-table-action" data-open="${t.id}">Open Console</button>`
@@ -657,10 +687,44 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ----- create task (client) -----
+    // Task types come from the policy file (case does not matter anywhere). The category in brackets after the scope,
+    // e.g. "... (Billing)", pre-fills the task type when it matches a known type, so the field is not left empty by accident.
+    let policyTypes = [], typeAutoFilled = false;
+    const norm = (s) => String(s || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+    async function loadPolicyTypes() {
+        try {
+            const data = await api('/api/policy-types');
+            policyTypes = data.types || [];
+            $('taskTypeList').textContent = '';
+            policyTypes.forEach((t) => { const o = document.createElement('option'); o.value = t; $('taskTypeList').appendChild(o); });
+            $('taskTypeHint').textContent = data.validated
+                ? `Available: ${policyTypes.join(', ') || 'none'}. Upper or lower case does not matter. Empty means the approved app only.`
+                : 'The server cannot read agent/policies.json, so this is checked by the host agent. Upper or lower case does not matter.';
+        } catch (_) { /* the status banner explains an unreachable server */ }
+    }
+    function suggestTaskType() {
+        const label = $('taskName').options[$('taskName').selectedIndex].text;
+        const m = label.match(/\(([^)]+)\)\s*$/);
+        const hit = m && policyTypes.find((t) => norm(t) === norm(m[1]));
+        if (hit && (!$('taskType').value || typeAutoFilled)) { $('taskType').value = hit; typeAutoFilled = true; }
+        else if (typeAutoFilled) { $('taskType').value = ''; typeAutoFilled = false; }
+    }
+    // "Custom task..." lets the Client describe any task; its scope then comes from the folders/apps fields (and/or a task type)
+    function syncCustomTitle() {
+        const custom = $('taskName').value === '__custom__';
+        $('customTitleGroup').classList.toggle('hidden', !custom);
+        $('customTitle').required = custom;
+        if (custom) $('customTitle').focus();
+    }
+    $('taskName').addEventListener('change', () => { syncCustomTitle(); suggestTaskType(); });
+    newTaskForm.addEventListener('reset', () => setTimeout(syncCustomTitle, 0));
+    $('taskType').addEventListener('input', () => { typeAutoFilled = false; });
+
     $('btnOpenTaskModal').addEventListener('click', async () => {
         populateVendorSelect();
         taskModal.classList.add('open');
-        await loadVendors(); // refresh so newly registered vendor accounts appear
+        await Promise.all([loadVendors(), loadPolicyTypes()]); // refresh vendor accounts and task types
+        suggestTaskType();
     });
     $('btnCloseModal').addEventListener('click', () => { taskModal.classList.remove('open'); newTaskForm.reset(); });
 
@@ -670,8 +734,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const { task } = await api('/api/tasks', {
                 method: 'POST',
                 body: {
-                    title: $('taskName').value,
+                    title: $('taskName').value === '__custom__' ? $('customTitle').value.trim() : $('taskName').value,
                     target_process: $('taskProcess').value.trim(),
+                    task_type: $('taskType').value.trim(),
+                    allowed_paths: $('customPaths').value,
+                    allowed_apps: $('customApps').value,
                     duration_minutes: Number($('taskWindow').value),
                     assigned_vendor_user_id: Number($('vendorSelect').value) || null
                 }
@@ -905,6 +972,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const t = STATE.tasks.find((x) => x.status === 'active');
         if (!t) { if (STATE.live) clearLive(); return; }
         STATE.live = { taskId: t.id, title: t.title, vendor: t.vendor_name, process: t.target_process, endMs: Date.parse(t.window_end) };
+        syncAlertsButton();
         ScopeDeskRTC.startBridge(); // after a page reload, reconnect to the agent with the stored pairing token
         renderLiveBar();
     }
@@ -923,7 +991,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const v = STATE.rtcView || { conn: 'idle', agent: 'unknown' };
         const sharing = ['starting', 'waiting', 'connecting', 'live', 'lost'].includes(v.conn);
         $('liveShare').textContent = SHARE_TEXT[v.conn] || v.conn;
-        $('liveAgent').textContent = (AGENT_TEXT[v.agent] || v.agent).replace('the approved app', live.process || 'the approved app');
+        $('liveAgent').textContent = (AGENT_TEXT[v.agent] || v.agent).replace('the approved app', live.process || 'the approved app')
+            + (v.policy && !['unknown', 'offline'].includes(v.agent) ? ` (policy: ${v.policy}${v.policy === '(app only)' ? ', no folder policy found' : ''})` : '');
         $('btnShareScreen').classList.toggle('hidden', sharing);
         if (v.shareSurface && v.shareSurface !== 'monitor') {
             $('liveShare').textContent += ' (window only: remote control needs your entire screen)';
@@ -936,7 +1005,8 @@ document.addEventListener('DOMContentLoaded', () => {
         let msg = null, b = '', warn = false;
         const showStage = v.conn === 'live' || v.conn === 'lost'; // the screen area exists only while a stream is (or just was) live
 
-        if (v.halted === 'violation') { msg = ['Control suspended', 'An app outside the approved scope was detected. The client has been alerted and decides what happens next.']; b = 'Control suspended'; warn = true; }
+        if (v.halted === 'violation' && v.locked) { msg = ['Locked out', 'Your access ended after a security violation. It cannot be restored in this session.']; b = 'Locked out'; warn = true; }
+        else if (v.halted === 'violation') { msg = ['Control suspended', 'An app outside the approved scope was detected. The client has been alerted and decides what happens next.']; b = 'Control suspended'; warn = true; }
         else if (v.conn === 'live') {
             if (v.agent === 'armed') b = 'Live. Remote control active';
             else if (v.agent === 'waiting') b = `Live. Waiting for the client to open ${proc}`;
@@ -945,7 +1015,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         else if (v.conn === 'lost') { msg = ['Connection lost', 'Trying to reconnect. The timer keeps running.']; b = 'Reconnecting...'; warn = true; }
         else if (v.conn === 'connecting' || v.conn === 'starting') { msg = ['Connecting...', 'The client shared their screen. Setting up the secure connection.']; b = 'Connecting...'; }
-        else if (v.conn === 'violation') { msg = ['Screen cut', 'An app outside the approved scope was detected. The client has been alerted.']; b = 'Cut off'; warn = true; }
+        else if (v.conn === 'violation') { msg = ['Locked out', 'An app or folder outside the approved scope was detected. Your access has been revoked.']; b = 'Locked out'; warn = true; }
         else if (v.conn === 'stopped') { msg = ['Screen sharing stopped', 'The client stopped sharing their screen.']; b = 'Sharing stopped'; warn = true; }
         else if (v.conn === 'closed' || v.conn === 'expired') { msg = ['Session closed', 'This session has ended.']; b = 'Closed'; warn = true; }
         else { msg = ['Waiting for the client', 'The client has to click "Share my screen". The remote screen appears here as soon as it is live.']; b = 'Waiting for the client'; }
@@ -1004,12 +1074,17 @@ document.addEventListener('DOMContentLoaded', () => {
     $('btnLiveTerminate').addEventListener('click', () => { if (STATE.live && confirm('End the session now? The vendor is disconnected immediately.')) terminateTask(STATE.live.taskId); });
 
     let agentCmd = { win: '', unix: '' };
+    $('btnEnableAlerts').addEventListener('click', async () => {
+        try { await Notification.requestPermission(); } catch (_) { /* unsupported */ }
+        syncAlertsButton();
+    });
     $('btnPairAgent').addEventListener('click', async () => {
         if (!STATE.live) return;
         $('agentError').classList.add('hidden');
         try {
             const { agentToken } = await api(`/api/tasks/${STATE.live.taskId}/agent-token`, { method: 'POST' });
             ScopeDeskRTC.setAgentToken(agentToken); // the page will also hand the vendor's data-channel input to the agent
+            $('cmdToken').textContent = agentToken;
             const origin = window.location.origin;
             agentCmd.win = `set SERVER_URL=${origin}&& set SCOPEDESK_AGENT_TOKEN=${agentToken}&& npm start`;
             agentCmd.unix = `SERVER_URL=${origin} SCOPEDESK_AGENT_TOKEN=${agentToken} npm start`;

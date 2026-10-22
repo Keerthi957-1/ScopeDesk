@@ -27,9 +27,9 @@
     s.on('webrtc-signal', onSignal);
     s.on('webrtc-close', (d) => { if (taskId && d.taskId === taskId) stop(d.reason === 'security_violation' ? 'violation' : 'closed'); });
     s.on('agent-status', (d) => { if (d.taskId === taskId) set({ agent: d.online ? 'waiting' : 'offline' }); });
-    s.on('agent-state', (d) => { if (d.taskId === taskId) set({ agent: d.state }); });
-    s.on('control-halt', (d) => { if (d.taskId === taskId) set({ halted: d.reason }); });
-    s.on('control-resume', (d) => { if (d.taskId === taskId) set({ halted: null }); });
+    s.on('agent-state', (d) => { if (d.taskId === taskId) set({ agent: d.state, policy: d.policy || view.policy }); });
+    s.on('control-halt', (d) => { if (d.taskId === taskId) set({ halted: d.reason, locked: !!d.permanent }); });
+    s.on('control-resume', (d) => { if (d.taskId === taskId) set({ halted: null, locked: false }); });
     // After a dropped connection the server forgot our room membership: join again
     s.on('connect', () => { if (role && taskId) join().catch(() => {}); });
   }
@@ -157,9 +157,8 @@
     await join();
   }
 
+  // The capture logic lives in remote-input.js; this only decides how each event travels
   function attachInput() {
-    const held = new Set();
-    let lastMove = 0;
     const send = (e, volatile) => {
       if (role !== 'viewer' || view.halted) return;
       const ch = e.t === 'move' ? dc.mv : dc.ctl;
@@ -168,38 +167,7 @@
       // Fallback: the server relay (still checked by the server on every event)
       if (socket && socket.connected) (volatile ? socket.volatile : socket).emit('remote-input', { taskId, e });
     };
-
-    // Position inside the picture, ignoring the black bars around a letterboxed video
-    function norm(ev) {
-      const vw = video.videoWidth, vh = video.videoHeight;
-      if (!vw || !vh) return null;
-      const r = video.getBoundingClientRect();
-      const scale = Math.min(r.width / vw, r.height / vh);
-      const cw = vw * scale, ch = vh * scale;
-      const x = (ev.clientX - r.left - (r.width - cw) / 2) / cw;
-      const y = (ev.clientY - r.top - (r.height - ch) / 2) / ch;
-      return x < 0 || x > 1 || y < 0 || y > 1 ? null : { x, y };
-    }
-
-    const on = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); return () => target.removeEventListener(type, fn, opts); };
-    const offs = [
-      on(stage, 'pointermove', (ev) => {
-        const now = performance.now(); if (now - lastMove < 16) return; lastMove = now;
-        const p = norm(ev); if (p) send({ t: 'move', ...p }, true);
-      }),
-      on(stage, 'pointerdown', (ev) => {
-        stage.focus(); const p = norm(ev); if (!p) return;
-        stage.setPointerCapture(ev.pointerId); ev.preventDefault();
-        send({ t: 'down', ...p, b: Math.min(ev.button, 2) });
-      }),
-      on(stage, 'pointerup', (ev) => { const p = norm(ev); if (p) send({ t: 'up', ...p, b: Math.min(ev.button, 2) }); }),
-      on(stage, 'contextmenu', (ev) => ev.preventDefault()),
-      on(stage, 'wheel', (ev) => { ev.preventDefault(); const k = ev.deltaMode === 1 ? 40 : 1; send({ t: 'wheel', dx: ev.deltaX * k, dy: ev.deltaY * k }); }, { passive: false }),
-      on(stage, 'keydown', (ev) => { ev.preventDefault(); if (ev.repeat) return; held.add(ev.code); send({ t: 'key', k: ev.code, d: true }); }),
-      on(stage, 'keyup', (ev) => { ev.preventDefault(); held.delete(ev.code); send({ t: 'key', k: ev.code, d: false }); }),
-      on(stage, 'blur', () => { held.forEach((k) => send({ t: 'key', k, d: false })); held.clear(); }) // never leave a key stuck down
-    ];
-    detachInput = () => offs.forEach((off) => off());
+    detachInput = window.ScopeDeskInput.attach({ stage, video, send });
   }
 
   // ---------- teardown ----------

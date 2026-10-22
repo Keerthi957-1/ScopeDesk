@@ -129,6 +129,13 @@ function initSqliteTables() {
   if (!taskCols.includes('assigned_vendor_user_id')) {
     sqliteDb.exec('ALTER TABLE tasks ADD COLUMN assigned_vendor_user_id INTEGER');
   }
+  // Task type (e.g. "Billing"): the host agent looks it up in agent/policies.json to learn which apps and folders are allowed
+  if (!taskCols.includes('task_type')) {
+    sqliteDb.exec("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT ''");
+  }
+  // Custom scope chosen by the Client when creating the ticket (JSON arrays, '' = none). Added on top of the task type's policy.
+  if (!taskCols.includes('allowed_paths')) sqliteDb.exec("ALTER TABLE tasks ADD COLUMN allowed_paths TEXT NOT NULL DEFAULT ''");
+  if (!taskCols.includes('allowed_apps')) sqliteDb.exec("ALTER TABLE tasks ADD COLUMN allowed_apps TEXT NOT NULL DEFAULT ''");
   sqliteDb.exec('CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks (assigned_vendor_user_id)');
 
   // Seed demo users on a brand-new database only

@@ -1,0 +1,72 @@
+{
+  "_readme": "Maps a task type to what the vendor may touch on THIS PC. Names are case-insensitive: Billing = billing = BILLING. Paths on Windows and macOS are compared without case too. Paths may use %ENV% variables or ~. Edit the paths to real folders on this PC. Any task can also add its own folders/apps in the ticket form (\"Custom task\"), on top of these lists.",
+  "Billing": {
+    "allowedApps": [
+      "explorer.exe",
+      "calc.exe",
+      "notepad.exe",
+      "excel.exe"
+    ],
+    "allowedPaths": [
+      "C:\\BillingData",
+      "C:\\Program Files\\BillingEngine",
+      "C:\\Users\\Public\\Invoices"
+    ]
+  },
+  "Documents": {
+    "allowedApps": [
+      "explorer.exe",
+      "winword.exe",
+      "excel.exe"
+    ],
+    "allowedPaths": [
+      "%USERPROFILE%\\Documents\\Shared"
+    ]
+  },
+  "Printer": {
+    "allowedApps": [
+      "explorer.exe",
+      "systemsettings.exe",
+      "printui.exe",
+      "mmc.exe",
+      "notepad.exe"
+    ],
+    "allowedPaths": [
+      "C:\\Windows\\System32\\spool",
+      "%USERPROFILE%\\Documents"
+    ]
+  },
+  "ERP": {
+    "allowedApps": [
+      "explorer.exe",
+      "excel.exe",
+      "notepad.exe"
+    ],
+    "allowedPaths": [
+      "C:\\ERP",
+      "C:\\ProgramData\\ERP"
+    ]
+  },
+  "VPN": {
+    "allowedApps": [
+      "explorer.exe",
+      "notepad.exe",
+      "openvpn-gui.exe",
+      "openvpn.exe"
+    ],
+    "allowedPaths": [
+      "C:\\Program Files\\OpenVPN",
+      "%USERPROFILE%\\OpenVPN"
+    ]
+  },
+  "Email": {
+    "allowedApps": [
+      "explorer.exe",
+      "notepad.exe",
+      "outlook.exe"
+    ],
+    "allowedPaths": [
+      "%USERPROFILE%\\Documents\\Outlook Files"
+    ]
+  }
+}

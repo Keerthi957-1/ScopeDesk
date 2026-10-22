@@ -38,6 +38,8 @@ function parseInput(e) {
   }
 }
 
+const parseList = (s) => { try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch (_) { return []; } };
+
 module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask, verifyToken }) {
   const agents = new Map(); // taskId -> Set<socketId>
   const halted = new Map(); // taskId -> 'violation' | 'ended'
@@ -51,10 +53,10 @@ module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask
   }
 
   // Stops input for a task right now. 'ended' is permanent; 'violation' can be lifted by the Client.
-  function halt(taskId, reason) {
+  function halt(taskId, reason, extra = {}) {
     halted.set(taskId, reason);
-    sendToAgents(taskId, 'control-halt', { taskId, reason });
-    emitToTask(taskId, 'control-halt', { taskId, reason }).catch(() => {});
+    sendToAgents(taskId, 'control-halt', { taskId, reason, ...extra });
+    emitToTask(taskId, 'control-halt', { taskId, reason, ...extra }).catch(() => {});
   }
 
   function resume(taskId) {
@@ -72,12 +74,13 @@ module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask
     socket.on('agent-hello', async (_payload, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
       try {
-        const task = await db.get('SELECT id, title, target_process, window_end, status FROM tasks WHERE id = ?', [taskId]);
+        const task = await db.get('SELECT id, title, target_process, task_type, allowed_paths, allowed_apps, window_end, status FROM tasks WHERE id = ?', [taskId]);
         if (!task || !['pending', 'active'].includes(task.status)) return reply({ ok: false, error: 'This task is not open any more.' });
         if (!agents.has(taskId)) agents.set(taskId, new Set());
         agents.get(taskId).add(socket.id);
         reply({
-          ok: true, taskId, title: task.title, targetProcess: task.target_process,
+          ok: true, taskId, title: task.title, targetProcess: task.target_process, taskType: task.task_type || '',
+          allowedPaths: parseList(task.allowed_paths), allowedApps: parseList(task.allowed_apps),
           windowEnd: task.window_end, serverTime: Date.now(), halted: halted.get(taskId) || null
         });
         emitToTask(taskId, 'agent-status', { taskId, online: true }).catch(() => {});
@@ -98,7 +101,8 @@ module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask
     socket.on('agent-state', (p) => {
       if (!p || Number(p.taskId) !== taskId || !['waiting', 'armed', 'locked'].includes(p.state)) return;
       agentState.set(taskId, p.state);
-      emitToTask(taskId, 'agent-state', { taskId, state: p.state }).catch(() => {});
+      const policy = typeof p.policy === 'string' ? p.policy.replace(/[^\w .()\-]/g, '').slice(0, 64) : '';
+      emitToTask(taskId, 'agent-state', { taskId, state: p.state, policy }).catch(() => {});
     });
 
     socket.on('disconnect', () => {

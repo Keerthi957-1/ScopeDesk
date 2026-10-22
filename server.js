@@ -22,6 +22,7 @@ const { Server } = require('socket.io');
 const db = require('./db');
 const createSessionTimers = require('./server/session-timers');
 const createRemoteControl = require('./server/remote-control');
+const policyCatalog = require('./server/policy-catalog');
 const { buildRtcConfig } = require('./server/rtc-config');
 
 const app = express();
@@ -338,6 +339,8 @@ const timers = createSessionTimers({
 const remoteControl = createRemoteControl({ io, db, authorizeRtc, emitToTask, verifyToken });
 
 // Set AUTO_CUT_STREAM=false in .env to keep the stream alive until the Client presses "Terminate Session Now".
+// Default: a violation locks the vendor out for good and the Client can only terminate. Set ALLOW_RESUME_AFTER_VIOLATION=true to let the Client resume.
+const ALLOW_RESUME = process.env.ALLOW_RESUME_AFTER_VIOLATION === 'true';
 const AUTO_CUT_STREAM = process.env.AUTO_CUT_STREAM !== 'false';
 
 // The Client's PC is where the vendor's actions really happen, so the trusted monitor (agent/client-agent.js)
@@ -357,19 +360,24 @@ async function handleHostViolation(user, payload, socket) {
   if (!session) return { ok: false, error: 'No active session for this task.' };
 
   const processName = String((payload && payload.processName) || 'unknown').replace(/[^\w .\-\\/()]/g, '').slice(0, 255) || 'unknown';
+  const kind = payload && payload.kind === 'path' ? 'path' : 'app';
+  const detail = String((payload && payload.detail) || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 300); // shown as text only, never as HTML
+  const what = kind === 'path'
+    ? `${processName} opened a folder outside the approved paths${detail ? ': ' + detail : ''}`
+    : `${processName} was brought to the front but is not approved for this task`;
   const occurredAt = new Date().toISOString();
   const insert = await db.run(`
     INSERT INTO intrusion_events (session_id, task_id, event_type, process_name, details, severity, action_taken, occurred_at)
-    VALUES (?, ?, 'unapproved_process', ?, ?, 'critical', 'client_notified', ?)
-  `, [session.id, taskId, processName, `Host agent saw ${processName} in the foreground`, occurredAt]);
+    VALUES (?, ?, ?, ?, ?, 'critical', 'client_notified', ?)
+  `, [session.id, taskId, kind === 'path' ? 'out_of_scope_path' : 'unapproved_process', processName, what, occurredAt]);
 
-  remoteControl.halt(taskId, 'violation'); // vendor input stops at once, whatever AUTO_CUT_STREAM says
-  if (AUTO_CUT_STREAM) cutStream(taskId, 'security_violation', `Security violation: ${processName} is not allowed for this task.`);
+  remoteControl.halt(taskId, 'violation', { permanent: !ALLOW_RESUME }); // vendor input stops at once, whatever AUTO_CUT_STREAM says
+  if (AUTO_CUT_STREAM) cutStream(taskId, 'security_violation', `Security violation: ${what}.`);
   emitToUser(session.client_id, 'violation-alert', {
-    message: 'Vendor accessed unauthorized data!', taskId, taskTitle: session.title, processName,
+    message: 'Vendor accessed unauthorized data!', taskId, taskTitle: session.title, processName, kind, detail, what, canResume: ALLOW_RESUME,
     vendor: session.vendor_name, eventId: insert.lastInsertRowid, occurredAt
   });
-  await logAudit(user.userId, 'HOST_VIOLATION_REPORTED', { taskId, processName, streamCut: AUTO_CUT_STREAM });
+  await logAudit(user.userId, 'HOST_VIOLATION_REPORTED', { taskId, processName, kind, detail, streamCut: AUTO_CUT_STREAM });
   return { ok: true, streamCut: AUTO_CUT_STREAM };
 }
 
@@ -430,6 +438,7 @@ io.on('connection', (socket) => {
       const wantedRole = payload && payload.role;
       const role = await authorizeRtc(user, taskId);
       if (!role || (wantedRole && wantedRole !== role)) return respond(ack, { ok: false, error: 'You are not allowed to use the stream for this task (it must be active and yours).' });
+      if (role === 'vendor' && !ALLOW_RESUME && remoteControl.isHalted(taskId)) return respond(ack, { ok: false, error: 'Your access to this session was revoked after a security violation.' });
       const room = rtcRoom(taskId);
       const peers = [...(await io.in(room).fetchSockets())].filter((s) => s.id !== socket.id).map((s) => s.data.user.role);
       socket.join(room);
@@ -482,7 +491,7 @@ io.on('connection', (socket) => {
   socket.on('resume-after-violation', async (payload, ack) => {
     const taskId = Number(payload && payload.taskId);
     const task = Number.isInteger(taskId) ? await db.get('SELECT client_id, status FROM tasks WHERE id = ?', [taskId]) : null;
-    const ok = !!task && user.role === 'client' && task.client_id === user.userId && task.status === 'active' && remoteControl.resume(taskId);
+    const ok = ALLOW_RESUME && !!task && user.role === 'client' && task.client_id === user.userId && task.status === 'active' && remoteControl.resume(taskId);
     if (typeof ack === 'function') ack({ ok });
   });
 
@@ -802,11 +811,46 @@ app.get('/api/tasks', authenticateToken, async (req, res) => {
   res.json({ tasks, serverTime: Date.now() });
 });
 
+// Task types the host policy knows (for the ticket form). `validated:false` = the server cannot see the policy file.
+app.get('/api/policy-types', authenticateToken, requireRole('client'), (req, res) => {
+  const types = policyCatalog.listTypes();
+  res.json({ types: types || [], validated: !!types });
+});
+
+// Custom scope typed into the ticket form. Only the Client who owns the PC can create a ticket, and the vendor can never edit one,
+// so these lists are the Client's own decision. They are still validated so a typo cannot silently widen access.
+function parseScopeLists(body) {
+  // Folders: one per line (commas can be part of a folder name). Applications: commas, semicolons or lines.
+  const asList = (v, sep) => (Array.isArray(v) ? v : String(v || '').split(sep)).map((s) => String(s).trim()).filter(Boolean);
+  const paths = asList(body.allowed_paths, /\r?\n|;/), apps = asList(body.allowed_apps, /[\r\n;,]+/);
+  if (paths.length > 10) return { error: 'At most 10 custom folders per task.' };
+  if (apps.length > 10) return { error: 'At most 10 custom applications per task.' };
+  for (const p of paths) {
+    if (p.length > 260 || /[\u0000-\u001f]/.test(p)) return { error: `Invalid folder: "${p.slice(0, 40)}".` };
+    if (!/^([a-zA-Z]:[\\/]|\\\\|\/|~[\\/]|%[^%]+%)/.test(p)) return { error: `"${p.slice(0, 60)}" is not a full folder path. Use something like C:\\Clients\\Acme or /Users/me/Reports.` };
+    if (/^[a-zA-Z]:[\\/]*$/.test(p) || /^\/+$/.test(p)) return { error: `"${p}" is a whole drive. That would allow every folder on it. Choose a specific folder.` };
+  }
+  for (const a of apps) {
+    if (a.length > 64 || !/^[\w .\-()+]+$/.test(a)) return { error: `Invalid application name: "${a.slice(0, 40)}". Use names like notepad.exe or Excel.` };
+  }
+  return { paths, apps };
+}
+
 app.post('/api/tasks', authenticateToken, requireRole('client'), async (req, res) => {
-  const { title, description, target_process, assigned_vendor_user_id, duration_minutes } = req.body || {};
+  const { title, description, target_process, assigned_vendor_user_id, duration_minutes, task_type } = req.body || {};
+  const scopeLists = parseScopeLists(req.body || {});
+  if (scopeLists.error) return res.status(400).json({ error: scopeLists.error });
   if (!title || !target_process) {
     return res.status(400).json({ error: 'Task title and target process are required.' });
   }
+
+  // Case-insensitive: "Billing", "billing" and " BILLING " are one task type. Stored in the policy file's own spelling.
+  const resolved = policyCatalog.resolveTaskType(task_type);
+  if (resolved.validated && resolved.canonical === null) {
+    return res.status(400).json({ error: `Unknown task type "${String(task_type).trim().slice(0, 40)}". Available: ${resolved.available.join(', ') || 'none'}. Leave it empty for app-only access.` });
+  }
+  // "C:\Apps\Billing.EXE" -> "Billing.EXE" (the agent compares app names without case or ".exe")
+  const processName = String(target_process).trim().split(/[\\/]/).pop().slice(0, 255);
 
   // Optional: send the request to one specific vendor account
   let assignedVendor = null;
@@ -827,15 +871,18 @@ app.post('/api/tasks', authenticateToken, requireRole('client'), async (req, res
   const windowEnd = new Date(now.getTime() + duration * 60000);
 
   const result = await db.run(`
-    INSERT INTO tasks (client_id, vendor_id, assigned_vendor_user_id, vendor_name, title, description, target_process, duration_minutes, token, status, window_start, window_end)
-    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    INSERT INTO tasks (client_id, vendor_id, assigned_vendor_user_id, vendor_name, title, description, target_process, task_type, allowed_paths, allowed_apps, duration_minutes, token, status, window_start, window_end)
+    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
   `, [
     req.user.userId,
     assignedVendor ? assignedVendor.id : null,
     vendorLabel,
     String(title).trim().slice(0, 200),
     description || 'Task-bounded remote support session with strict process isolation',
-    String(target_process).trim().slice(0, 255),
+    processName,
+    String(resolved.canonical || '').replace(/[^\w .\-]/g, '').trim().slice(0, 64), // the name as written in agent/policies.json, e.g. "Billing"
+    scopeLists.paths.length ? JSON.stringify(scopeLists.paths) : '',
+    scopeLists.apps.length ? JSON.stringify(scopeLists.apps) : '',
     duration,
     token,
     now.toISOString(),
@@ -844,7 +891,7 @@ app.post('/api/tasks', authenticateToken, requireRole('client'), async (req, res
 
   const task = await db.get('SELECT * FROM tasks WHERE id = ?', [result.lastInsertRowid]);
   timers.schedule(task.id, windowEnd.getTime());
-  await logAudit(req.user.userId, 'TASK_CREATED', { taskId: task.id, duration, assignedTo: assignedVendor ? assignedVendor.id : null });
+  await logAudit(req.user.userId, 'TASK_CREATED', { taskId: task.id, duration, assignedTo: assignedVendor ? assignedVendor.id : null, customFolders: scopeLists.paths.length, customApps: scopeLists.apps.length });
   if (assignedVendor) {
     emitToUser(assignedVendor.id, 'task-request', {
       taskId: task.id, title: task.title, client: req.user.organization || req.user.username, duration
