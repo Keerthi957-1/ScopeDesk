@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.local
+.jwt_secret
+scopedesk.db
+*.db
+*.db-shm
+*.db-wal
+npm-debug.log*
+.DS_Store
+Thumbs.db
+dist/

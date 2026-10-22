@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScopeDesk - Secure Remote Support Sandbox</title>
+    <link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+
+    <!-- ================= SYSTEM AUTHENTICATION GATEWAY ================= -->
+    <div id="authContainer" class="auth-wrapper">
+        <div class="auth-split">
+            <!-- Left Brand Hero Column -->
+            <div class="auth-sidebar">
+                <div class="brand">
+                    <div class="logo-icon"></div>
+                    <span class="brand-name">ScopeDesk</span>
+                </div>
+                <div class="auth-hero-text">
+                    <span class="badge-pill">• TASK-SCOPED REMOTE SUPPORT</span>
+                    <h2>The right help.<br>Within your limits.</h2>
+                    <p>A secure sandboxed workspace connecting small offices with trusted remote technicians. Every terminal layer session stays strictly confined to a single verified task boundary.</p>
+                </div>
+                <div class="auth-footer-note">
+                    <p>🔒 <strong>Isolation Active:</strong> Broad filesystem configurations and internal network folders remain dynamically blocked outside explicit task scope definitions.</p>
+                </div>
+            </div>
+
+            <!-- Right Dynamic Forms Area -->
+            <div class="auth-form-container">
+                <div class="auth-toggle-header">
+                    <span id="authToggleText">New to ScopeDesk?</span>
+                    <button id="btnSwitchAuthMode" class="link-btn">Create an account →</button>
+                </div>
+
+                <div class="auth-box">
+                    <h2 id="authFormTitle">Sign in to ScopeDesk</h2>
+                    <p id="authFormSubtitle" class="auth-sub">Your secure remote support hub, with clear constraints.</p>
+
+                    <div id="serverBanner" class="server-banner hidden" role="alert"></div>
+                    <div id="authError" class="auth-error hidden" role="alert"></div>
+                    <div id="authSuccess" class="auth-success hidden" role="status"></div>
+
+                    <!-- SIGN IN / SIGN UP -->
+                    <form id="authForm" novalidate>
+                        <div id="roleSelectorGroup" class="form-group hidden">
+                            <label>Select Workspace Account Role</label>
+                            <div class="role-grid">
+                                <label class="role-card active" data-role="client">
+                                    <input type="radio" name="accountRole" value="client" checked>
+                                    <div class="role-card-content">
+                                        <span class="role-icon">🏢</span>
+                                        <strong>Client Account</strong>
+                                        <p>Request remote aid, specify boundaries, generate session keys, and monitor engineers.</p>
+                                    </div>
+                                </label>
+                                <label class="role-card" data-role="vendor">
+                                    <input type="radio" name="accountRole" value="vendor">
+                                    <div class="role-card-content">
+                                        <span class="role-icon">🔧</span>
+                                        <strong>Vendor Partner</strong>
+                                        <p>Claim ticket invitations, validate tokens, and launch isolated target processes.</p>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="authUsername" id="lblAuthUsername">Username or email</label>
+                            <input type="text" id="authUsername" placeholder="e.g., olivia.chen" autocomplete="username">
+                            <p id="usernameMsg" class="field-msg hidden"></p>
+                        </div>
+
+                        <div id="emailGroup" class="form-group hidden">
+                            <label for="authEmail">Email address</label>
+                            <input type="email" id="authEmail" placeholder="you@company.com" autocomplete="email">
+                            <p id="emailMsg" class="field-msg hidden"></p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="authPassword">Security access password</label>
+                            <div class="password-field">
+                                <input type="password" id="authPassword" placeholder="••••••••" autocomplete="current-password">
+                                <button type="button" class="pw-toggle" aria-label="Show password" title="Show / hide password"><svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="icon-eye-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                            </div>
+                            <p id="pwHint" class="input-tip-note hidden">At least 8 characters.</p>
+                        </div>
+
+                        <div id="forgotLinkRow" class="field-row-links">
+                            <button type="button" id="btnForgotPassword" class="link-btn">Forgot password?</button>
+                        </div>
+
+                        <button type="submit" id="btnSubmitAuth" class="btn-primary w-100">Sign In to Dashboard →</button>
+                    </form>
+
+                    <!-- FORGOT PASSWORD -->
+                    <form id="forgotForm" class="hidden" novalidate>
+                        <div class="form-group">
+                            <label for="forgotEmail">Account email address</label>
+                            <input type="email" id="forgotEmail" placeholder="you@company.com" autocomplete="email">
+                        </div>
+                        <button type="submit" class="btn-primary w-100">Send reset link</button>
+                        <button type="button" class="link-btn back-link" data-back-to-signin>← Back to sign in</button>
+                    </form>
+
+                    <!-- RESET PASSWORD (opened from the emailed link: /?reset=TOKEN) -->
+                    <form id="resetForm" class="hidden" novalidate>
+                        <div class="form-group">
+                            <label for="resetPassword">New password</label>
+                            <div class="password-field">
+                                <input type="password" id="resetPassword" placeholder="At least 8 characters" autocomplete="new-password">
+                                <button type="button" class="pw-toggle" aria-label="Show password" title="Show / hide password"><svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="icon-eye-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn-primary w-100">Set new password</button>
+                        <button type="button" class="link-btn back-link" data-back-to-signin>← Back to sign in</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= SECURE APP INTERFACE WORKSPACE ================= -->
+    <div id="appContainer" class="dashboard-container hidden">
+        
+        <!-- Shared App Navigation Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="logo-icon"></div>
+                <span class="brand-name">ScopeDesk</span>
+            </div>
+            
+            <div class="workspace-selector">
+                <div class="workspace-avatar" id="userAvatarSlot">U</div>
+                <div class="workspace-info">
+                    <span class="workspace-title" id="userNameSlot">Profile Persona</span>
+                    <span class="workspace-role" id="userRoleBadgeSlot">System Access Tier</span>
+                </div>
+                <button id="btnLogOut" class="logout-icon" title="Terminate Profile Session">🚪</button>
+            </div>
+
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-target="overview-panel" id="navOverviewLink">📊 Primary Workspace Overview</a>
+                <a href="#" class="nav-item" data-target="session-panel" id="navSessionLink">💬 Live Isolation Screen Monitor</a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div>🛡️</div>
+                <div class="footer-text">
+                    <p class="bold">Boundary Loop Imposed.</p>
+                    <p>Process tracking daemons monitor runtime events. Scope violation attempts force terminal lockout mechanisms.</p>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Fluid Panes Workspace -->
+        <main class="main-content">
+            
+            <!-- PANEL SECTION A: CLIENT ENVIRONMENT VIEWPORT -->
+            <div id="clientDashboardPanel" class="pane-view hidden">
+                <header class="content-header">
+                    <div class="breadcrumbs">MAPLE & CO. / INTERNAL CLIENT DEPLOYMENT</div>
+                    <div class="header-actions">
+                        <h1 class="welcome-heading">Good morning, <span class="profile-name">Client Admin</span></h1>
+                        <button class="btn-primary" id="btnOpenTaskModal">+ Request New Secure Support Task</button>
+                    </div>
+                    <p class="subtitle">Publish explicit remote support invitations and issue validation token strings to designated support agencies.</p>
+                </header>
+
+                <div id="newTokenNotice" class="info-alert-box hidden" style="margin-bottom: 20px;">
+                    <strong>Task created. Send this token to your vendor:</strong><br>
+                    <code class="token-code" id="newTokenValue"></code>
+                    <button type="button" class="btn-table-action" id="btnDismissToken">Dismiss</button>
+                </div>
+
+                <section class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">Active Connection Streams</span><span>💻</span></div>
+                        <div class="metric-value" id="clientActiveCount">00</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">Isolation Keys Generated</span><span>🎫</span></div>
+                        <div class="metric-value" id="clientTokenCount">00</div>
+                    </div>
+                    <div class="metric-card clickable" id="cardPartners" role="button" tabindex="0" title="View all vendor accounts">
+                        <div class="metric-header"><span class="metric-label">Approved Partner Agencies</span><span>🤝</span></div>
+                        <div class="metric-value" id="clientPartnerCount">00</div>
+                        <div class="metric-hint">View all vendors →</div>
+                    </div>
+                </section>
+
+                <div class="data-split-layout">
+                    <section class="table-section">
+                        <h3 class="section-title">Support Ticket Matrix & Single-Use Authorization Tokens</h3>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Target Task Context Description</th>
+                                        <th>Assigned Support Agency</th>
+                                        <th>Token Status</th>
+                                        <th>Runtime Compliance Status</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="clientTasksBody">
+                                    <!-- Populated via script runtime arrays -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- PANEL SECTION B: VENDOR/TECHNICIAN WORKSPACE PIPELINE -->
+            <div id="vendorDashboardPanel" class="pane-view hidden">
+                <header class="content-header">
+                    <div class="breadcrumbs">EXTERNAL PARTNER STATIONS / REMOTE ACCESS PIPELINE</div>
+                    <h1 class="welcome-heading">Technician Control Console</h1>
+                    <p class="subtitle">Claim token keys from clients, pass local credential tests, and launch explicit virtual window frames.</p>
+                </header>
+
+                <section class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">My Sessions</span><span>📥</span></div>
+                        <div class="metric-value" id="vendorIncomingCount">00</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">Local Sandbox Subsystem Engine</span><span>🔒</span></div>
+                        <div class="metric-value status-ok-text">Isolation Engine Initialized</div>
+                    </div>
+                </section>
+
+                <div class="data-split-layout">
+                    <section class="table-section">
+                        <h3 class="section-title">Initialize Remote Session Stream</h3>
+                        <p class="section-subtitle">Provide a valid token issued by the client organization to construct an isolated process runtime layer.</p>
+                        
+                        <div class="token-activation-box">
+                            <input type="text" id="inputTokenKey" placeholder="Paste Token Key (e.g., SCD-1234-AB12CD)" class="token-input-field">
+                            <button id="btnValidateToken" class="btn-primary">Connect Sandboxed Terminal →</button>
+                        </div>
+                        <div id="tokenErrorFeedback" class="error-text hidden"></div>
+
+                        <h3 class="section-title" style="margin-top: 32px;">My Assigned Tasks</h3>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Requested Operations Profile</th>
+                                        <th>Origin Office Client</th>
+                                        <th>Session Status</th>
+                                        <th>Action Toolbar</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="vendorTasksBody">
+                                    <!-- Dynamic rows filled by script loop -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- PANEL SECTION C: REAL-TIME SECURE REMOTE MONITOR & RUNTIME EMULATOR -->
+            <div id="sessionMonitorPanel" class="pane-view hidden">
+                <header class="content-header">
+                    <div class="breadcrumbs">ISOLATION SANDBOX SIMULATOR / TELEMETRY WATCHDOG</div>
+                    <h1 class="welcome-heading">Sandboxed Remote Terminal Console</h1>
+                    <p class="subtitle">Simulating isolated remote engine pipelines. Technician operations are strictly bound within the approved app context container.</p>
+                </header>
+
+                <div class="sandbox-emulator-grid">
+                    <!-- Virtual Machine Render Engine Panel Card -->
+                    <div class="emulator-screen-card">
+                        <div class="emulator-header">
+                            <span class="window-dot red"></span>
+                            <span class="window-dot yellow"></span>
+                            <span class="window-dot green"></span>
+                            <span class="window-title" id="emulatorWindowTitle">Virtual Frame Interface Stream</span>
+                        </div>
+                        <div class="emulator-body">
+                            
+                            <!-- Approved Software Execution Isolation View Frame Box -->
+                            <div class="app-scope-box" id="allowedAppWindow">
+                                <div class="app-header">🛡️ Isolated Subroutine Application Execution Space</div>
+                                <div class="app-content">
+                                    <p>⚙️ <strong>Target Support Context Scope Workspace Area:</strong></p>
+                                    <div class="terminal-mock">
+                                        $ init-diagnostics-routine --bound-mode=strict<br>
+                                        <span class="text-green">[MONITOR] Hook listener tracking active modifications within approved task tree logic...</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Forbidden System Directories Base Workspace Layer -->
+                            <div class="forbidden-directory-area">
+                                <p class="restricted-header">RESTRICTED BACKEND COMPLIANCE PERIPHERALS (FORBIDDEN OUT-OF-SCOPE BOUNDARIES)</p>
+                                <div class="file-grid-mock">
+                                    <div class="file-icon-mock" id="btnTriggerBreach">
+                                        <span class="folder-emoji">📁</span>
+                                        <span class="file-label-text">Payroll & Financials Document Root</span>
+                                    </div>
+                                    <div class="file-icon-mock muted">
+                                        <span class="folder-emoji">📁</span>
+                                        <span class="file-label-text">Customer_PII_Backup</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                        <div class="emulator-footer-controls">
+                            <span class="text-green" id="emulatorStatusBadge">● Active Remote Core Pipe Connected</span>
+                            <button id="btnSimulateBreach" class="btn-secondary-danger">Simulate Out-Of-Scope Breach Event</button>
+                            <button id="btnEndSession" class="btn-danger">End Session</button>
+                        </div>
+                    </div>
+
+                    <!-- Side Boundary Context Summary Rule Cards -->
+                    <div class="emulator-meta-sidebar">
+                        <div class="meta-section">
+                            <h4>Session Bounds Signature</h4>
+                            <div class="scope-meta-item"><strong>Assigned Operations Scope:</strong> <span id="lblScopeTask">None Active</span></div>
+                            <div class="scope-meta-item"><strong>Technician Agency:</strong> <span id="lblScopeVendor">Unassigned</span></div>
+                            <div class="scope-meta-item"><strong>Session Reference:</strong> <code id="lblScopeToken">None</code></div>
+                        </div>
+
+                        <div class="meta-section bg-light-green">
+                            <h4 class="green-text-heading">✓ Approved Process Operations</h4>
+                            <ul class="checkmark-list">
+                                <li>Modify configuration strings for target application</li>
+                                <li>Run internal local diagnostic routines</li>
+                            </ul>
+                        </div>
+
+                        <div class="meta-section bg-light-red">
+                            <h4 class="red-text-heading">✕ Forbidden Storage Scopes</h4>
+                            <ul class="crossmark-list">
+                                <li>Query external structural directory drives</li>
+                                <li>Perform outgoing network socket requests</li>
+                                <li>Extract plain-text storage databases</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- ================= DYNAMIC CLIENT SECURE REQUEST CREATION MODAL OVERLAY ================= -->
+    <div class="modal-overlay" id="taskModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Generate Secure Support Ticket</h3>
+                <button class="close-modal" id="btnCloseModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="newTaskForm">
+                    <div class="form-group">
+                        <label for="taskName">Select Target Troubleshooting Activity Scope</label>
+                        <select id="taskName" class="form-select-control">
+                            <option value="Fix Billing Software Invoice PDF Export Engine Error">Fix Billing Software Invoice PDF Export Engine Error (Billing)</option>
+                            <option value="Clear Stuck Local Printer Spooler Memory Queues">Clear Stuck Local Printer Spooler Memory Queues (Printer)</option>
+                            <option value="Resolve System Database Synchronization Lag Profiles">Resolve System Database Synchronization Lag Profiles (ERP)</option>
+                            <option value="Configure Split-Tunnel OpenVPN Gateway Routings">Configure Split-Tunnel OpenVPN Gateway Routings (VPN)</option>
+                            <option value="Re-Route IMAP Server DNS Record Pointers">Re-Route IMAP Server DNS Record Pointers (Email issues)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="taskProcess">Allowed Application (process name, e.g. billing.exe)</label>
+                        <input type="text" id="taskProcess" required maxlength="255" placeholder="billing.exe">
+                    </div>
+                    <div class="form-group">
+                        <label for="taskWindow">Access Time Window</label>
+                        <select id="taskWindow" class="form-select-control">
+                            <option value="15">15 minutes</option>
+                            <option value="30" selected>30 minutes</option>
+                            <option value="60">1 hour</option>
+                            <option value="120">2 hours</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="vendorSelect">Send request to vendor account</label>
+                        <select id="vendorSelect" class="form-select-control">
+                            <option value="">Any vendor (I will share the token myself)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sandbox Enforcement Rule Mode</label>
+                        <div class="info-alert-box">
+                            🔒 Automatically isolates the active shell thread tree environment exclusively to directories and configuration files directly associated with your selected target program workflow profile. Broad desktop directory structures remain hidden and inaccessible.
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-primary w-100 style-margin-top">Publish Form Request & Issue Token</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: ALL VENDORS MODAL ================= -->
+    <div class="modal-overlay" id="vendorsModal">
+        <div class="modal modal-wide">
+            <div class="modal-header">
+                <h3>Vendor Accounts</h3>
+                <button class="close-modal" data-close-modal="vendorsModal">&times;</button>
+            </div>
+            <p class="section-subtitle">Every vendor account on ScopeDesk. Send a request, report a vendor, or end their access to your organization.</p>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Vendor</th><th>Specialization</th><th>Rating</th><th>Tasks done</th><th>Status</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="vendorsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: REPORT VENDOR MODAL ================= -->
+    <div class="modal-overlay" id="reportModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Report <span id="reportVendorName">vendor</span></h3>
+                <button class="close-modal" data-close-modal="reportModal">&times;</button>
+            </div>
+            <form id="reportForm">
+                <div class="form-group">
+                    <label for="reportReason">Reason</label>
+                    <select id="reportReason" class="form-select-control">
+                        <option>Accessed unauthorized data</option>
+                        <option>Unprofessional conduct</option>
+                        <option>Did not do the agreed work</option>
+                        <option>Suspicious activity</option>
+                        <option>Other</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="reportDetails">Details (optional)</label>
+                    <textarea id="reportDetails" rows="4" maxlength="1000" class="form-select-control" placeholder="What happened?"></textarea>
+                </div>
+                <button type="submit" class="btn-danger w-100">Submit Report</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: VIOLATION ALERT MODAL ================= -->
+    <div class="modal-overlay violation-overlay" id="violationModal" role="alertdialog" aria-modal="true" aria-labelledby="violationTitle">
+        <div class="modal violation-modal" id="violationBox">
+            <div class="violation-icon">⚠️</div>
+            <h3 id="violationTitle">Security Alert</h3>
+            <p id="violationMessage">Vendor accessed unauthorized data!</p>
+            <div class="violation-details">
+                <div><strong>Task:</strong> <span id="violationTask">-</span></div>
+                <div><strong>Vendor:</strong> <span id="violationVendor">-</span></div>
+                <div><strong>Accessed:</strong> <code id="violationProcess">-</code></div>
+            </div>
+            <div class="violation-actions">
+                <button type="button" class="btn-danger" id="btnTerminateNow">Terminate Session Now</button>
+                <button type="button" class="btn-ghost" id="btnDismissViolation">Keep Monitoring</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js?v=5"></script>
+       <div style="padding:10px;border:1px dashed gray;margin:10px">
+     <input id="rtcRoom" placeholder="Test code (e.g. test123)">
+     <button id="rtcShareBtn">Client: Share screen</button>
+     <button id="rtcViewBtn">Vendor: View screen</button>
+     <video id="rtcVideo" autoplay playsinline controls style="width:100%"></video>
+   </div>
+
+   <script src="/socket.io/socket.io.js"></script>
+   <script src="webrtc.js"></script>
+</body>
+</html>
