@@ -28,8 +28,9 @@ const { buildRtcConfig } = require('./server/rtc-config');
 const app = express();
 const server = http.createServer(app);
 // Allow the UI to be opened from localhost on another port (e.g. VS Code Live Server) during development
+const DEV_ORIGINS = ['http://127.0.0.1:5500', 'http://localhost:5500']; // VS Code Live Server
 function corsOrigin(origin, cb) {
-  const ok = !origin || (origin === 'null' && !IS_PRODUCTION) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || origin === process.env.CORS_ORIGIN;
+  const ok = !origin || DEV_ORIGINS.includes(origin) || (origin === 'null' && !IS_PRODUCTION) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || origin === process.env.CORS_ORIGIN;
   cb(null, ok);
 }
 const io = new Server(server, { cors: { origin: corsOrigin } });
@@ -114,7 +115,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   next();
 });
-app.get('/api/health', (req, res) => res.json({ app: 'scopedesk', ok: true }));
+app.get('/api/health', (req, res) => res.status(200).json({ app: 'scopedesk', ok: true, status: 'online' }));
 // IMPORTANT: serve ONLY the /public folder (never the project root, which holds the database and secrets)
 // no-cache: the browser must re-check files on every load, so an old cached script.js can never run against a new server
 app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });

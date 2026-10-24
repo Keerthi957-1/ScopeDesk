@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScopeDesk - Remote workspace</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: "Segoe UI", system-ui, sans-serif; color: #e6f0f5; }
+  /* The stage is the whole window. The video fills it (object-fit: contain keeps the Client's aspect ratio; remote-input.js
+     maps clicks with the same letterbox maths, so the pointer lands exactly where the Vendor points). */
+  #stage { position: fixed; inset: 0; outline: none; background: #000; }
+  #video { width: 100vw; height: 100vh; object-fit: contain; background: #000; visibility: hidden; }
+  #stage.live #video { visibility: visible; }
+  #stage.control-on { box-shadow: inset 0 0 0 3px #1fbf8f; }
+  #overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; text-align: center; background: rgba(0,0,0,.72); z-index: 5; padding: 24px; }
+  #overlay.show { display: flex; }
+  #overlay .card { max-width: 520px; }
+  #overlay h2 { margin: 0 0 8px; font-size: 22px; }
+  #overlay p { margin: 0; color: #9db3c0; line-height: 1.5; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; z-index: 10; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+         padding: 8px 14px; background: rgba(11,26,36,.94); border-bottom: 1px solid #28404f; transform: translateY(-100%); transition: transform .18s; font-size: 14px; }
+  #bar.show { transform: none; }
+  #bar .grow { flex: 1; min-width: 120px; }
+  #bar b { font-weight: 600; }
+  .clock { font-family: Consolas, monospace; font-size: 18px; }
+  .clock.warn { color: #ffb347; } .clock.zero { color: #ff6b5b; }
+  .ok { color: #3ddc97; } .warn { color: #ffb347; }
+  #bar button { background: #16303f; color: #e6f0f5; border: 1px solid #33566a; border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; }
+  #bar button:hover { background: #1d3d50; }
+  #hint { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 4; font-size: 12px; color: #9db3c0; background: rgba(0,0,0,.55); padding: 4px 10px; border-radius: 10px; pointer-events: none; opacity: 0; transition: opacity .3s; }
+  #hint.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="stage" tabindex="0" aria-label="Remote screen. Click to take control.">
+    <video id="video" autoplay playsinline muted></video>
+  </div>
+
+  <div id="overlay" role="status"><div class="card"><h2 id="ovTitle">Opening workspace...</h2><p id="ovText">Connecting to the session.</p></div></div>
+
+  <div id="bar" role="toolbar" aria-label="Workspace controls">
+    <span><b id="barTask">Task</b> <span id="barProc"></span></span>
+    <span class="grow" id="barStatus">Connecting...</span>
+    <span>Time left: <b class="clock" id="barClock">--:--</b></span>
+    <button type="button" id="btnFull">Full screen</button>
+    <button type="button" id="btnClose" title="Closing this window does not end the session. End it from the dashboard.">Close workspace</button>
+  </div>
+  <div id="hint">Move the pointer to the top edge for the toolbar</div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="remote-input.js?v=1"></script>
+  <script src="webrtc.js?v=3"></script>
+  <script src="remote-viewport.js?v=1"></script>
+</body>
+</html>

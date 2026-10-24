@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>ScopeDesk</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  html,body{height:100%;margin:0;background:#0b1a24;color:#e6f0f5;font-family:Segoe UI,system-ui,sans-serif}
+  body{display:flex;align-items:center;justify-content:center;text-align:center}
+  .box{max-width:520px;padding:24px}
+  h1{font-size:22px;margin:0 0 8px} p{color:#9db3c0;line-height:1.5;margin:6px 0}
+  .spin{width:28px;height:28px;border:3px solid #28404f;border-top-color:#1fbf8f;border-radius:50%;margin:0 auto 16px;animation:s 1s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}} .err h1{color:#ff8a7a} .err .spin{display:none}
+</style></head>
+<body><div class="box" id="box"><div class="spin"></div><h1 id="t">Starting ScopeDesk…</h1><p id="m">Getting things ready.</p></div>
+<script>
+  const q = new URLSearchParams(location.search).get('error');
+  if (q) { document.getElementById('box').className = 'box err'; document.getElementById('t').textContent = 'ScopeDesk could not start'; document.getElementById('m').textContent = q; }
+</script></body></html>

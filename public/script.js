@@ -3,16 +3,36 @@ document.addEventListener('submit', (e) => e.preventDefault(), true);
 
 document.addEventListener('DOMContentLoaded', () => {
 
-    // Same-origin when this page is served by ScopeDesk (any port); otherwise (Live Server / file) use localhost:3000
+    // Where is the ScopeDesk backend?
+    //   1) same origin (page served by ScopeDesk itself, any port)
+    //   2) an address you saved:  localStorage.setItem('scopedesk_api', 'http://localhost:5000')
+    //   3) http://localhost:3000 (the server's default port)
+    // Every check has a timeout, so a dead port can never hang the login screen.
     let API_BASE = null;
-    async function resolveApiBase() {
-        if (API_BASE !== null) return;
+    let apiResolved = false;
+    const API_CANDIDATES = () => {
+        let saved = '';
+        try { saved = (localStorage.getItem('scopedesk_api') || '').replace(/\/+$/, ''); } catch (_) { /* storage blocked */ }
+        return ['', saved, 'http://localhost:3000']
+            .filter((v, i, a) => (v === '' || v) && a.indexOf(v) === i);
+    };
+    async function isScopeDesk(base) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 2500);
         try {
-            const r = await fetch('/api/health');
+            const r = await fetch(base + '/api/health', { cache: 'no-store', signal: ctrl.signal });
             const d = await r.json();
-            if (d && d.app === 'scopedesk') { API_BASE = ''; return; }
-        } catch (_) { /* not served by ScopeDesk */ }
-        API_BASE = 'http://localhost:3000';
+            return !!(d && d.app === 'scopedesk');
+        } catch (_) { return false; }
+        finally { clearTimeout(timer); }
+    }
+    async function resolveApiBase() {
+        if (apiResolved) return;
+        for (const base of API_CANDIDATES()) {
+            if (await isScopeDesk(base)) { API_BASE = base; apiResolved = true; return; }
+        }
+        // Not found (server down). Use a default so requests fail cleanly, and look again on the next call.
+        if (API_BASE === null) { try { API_BASE = (localStorage.getItem('scopedesk_api') || '').replace(/\/+$/, ''); } catch (_) { API_BASE = ''; } API_BASE = API_BASE || 'http://localhost:3000'; }
     }
 
     // ================= STATE =================
@@ -472,7 +492,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ================= 3. REAL-TIME SOCKET =================
+    let socketLibTried = false;
     function connectSocket() {
+        // Live Server cannot serve /socket.io/socket.io.js. If the library is missing, load it from the backend once.
+        if (typeof io === 'undefined') {
+            if (socketLibTried) { ScopeDeskStatus.reportDown(); return; }
+            socketLibTried = true;
+            const tag = document.createElement('script');
+            tag.src = (API_BASE || '') + '/socket.io/socket.io.js';
+            tag.onload = connectSocket;
+            tag.onerror = () => ScopeDeskStatus.reportDown();
+            document.head.appendChild(tag);
+            return;
+        }
         if (STATE.socket) STATE.socket.disconnect();
         // The server reads identity from this signed token. Nothing the browser says about "who I am" is trusted.
         const socket = io(API_BASE || undefined, { auth: { token: STATE.authToken } });
@@ -524,6 +556,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Closes the remote-view connection. When you add your WebRTC peer, store it in window.scopedeskPeer
     // (or expose closeRemoteConnection() from your Electron preload) and this will cut it.
     function teardownRemoteConnection() {
+        closeViewport(0);
         ScopeDeskRTC.stop('closed');
         if (window.scopedeskNative && typeof window.scopedeskNative.closeRemoteConnection === 'function') {
             window.scopedeskNative.closeRemoteConnection();
@@ -908,10 +941,52 @@ document.addEventListener('DOMContentLoaded', () => {
         syncVendorNav();
         renderVendorState({ conn: 'idle', agent: 'unknown', halted: null }); // stage hidden until the client's screen is live
         tickClocks();
-        ScopeDeskRTC.startViewer(task.id, { video: $('remoteVideo'), stage: $('remoteStage') })
-            .catch((err) => toast(err.message, true));
-        $('remoteStage').focus();
+        if (openViewport(task.id)) {
+            $('remoteWaitTitle').textContent = 'Your full-screen workspace is open';
+            $('remoteWaitText').textContent = 'The remote screen opens in its own window so you have the whole display to work with. Closed it by mistake? Use "Open full-screen workspace".';
+        } else {
+            // The window could not open: use the screen area inside this page instead
+            ScopeDeskRTC.startViewer(task.id, { video: $('remoteVideo'), stage: $('remoteStage') })
+                .catch((err) => toast(err.message, true));
+            $('remoteStage').focus();
+        }
     }
+
+    // ---- Vendor full-screen workspace (remote-viewport.html) ----
+    let viewportWin = null;
+    function openViewport(taskId) {
+        if (viewportWin && !viewportWin.closed) { viewportWin.focus(); return true; }
+        const url = `${window.location.origin}/remote-viewport.html?task=${encodeURIComponent(taskId)}`;
+        let w = null;
+        try { w = window.open(url, `scopedesk-viewport-${taskId}`, 'popup=yes,width=1600,height=900'); } catch (_) { w = null; }
+        if (!w) { toast('The full-screen window was blocked. Allow pop-ups for this site, then use "Open full-screen workspace".', true); return false; }
+        viewportWin = w;
+        return true;
+    }
+    function closeViewport(delayMs) {
+        const w = viewportWin; viewportWin = null;
+        if (!w || w.closed) return;
+        setTimeout(() => { try { w.close(); } catch (_) { /* already closed */ } }, delayMs || 0);
+    }
+    // The workspace window asks for the sign-in token only if its own copy of the session storage is missing (same origin only)
+    window.addEventListener('message', (e) => {
+        if (e.origin !== window.location.origin || !viewportWin || e.source !== viewportWin) return;
+        if (e.data && e.data.t === 'scopedesk-need-token' && STATE.authToken) e.source.postMessage({ t: 'scopedesk-token', token: STATE.authToken }, window.location.origin);
+    });
+    setInterval(() => {
+        if (viewportWin && viewportWin.closed) {
+            viewportWin = null;
+            if (STATE.live && STATE.user && STATE.user.role === 'vendor') {
+                $('remoteWaitTitle').textContent = 'Full-screen workspace closed';
+                $('remoteWaitText').textContent = 'The session is still running. Use "Open full-screen workspace" to continue.';
+            }
+        }
+    }, 1000);
+    $('btnOpenViewport').addEventListener('click', () => {
+        if (!STATE.live || !STATE.user || STATE.user.role !== 'vendor') return;
+        if (ScopeDeskRTC.isActive()) ScopeDeskRTC.stop('closed');   // never two viewers for one session
+        openViewport(STATE.live.taskId);
+    });
 
     // There is no vendor-side monitor and no simulate button any more. Out-of-scope activity is detected by the host
     // agent on the Client's PC (agent/monitor.js), which the vendor cannot tamper with.
@@ -960,7 +1035,9 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(tickClocks, 1000);
 
     function clearLive() {
+        closeViewport(4000);   // short delay so the Vendor can read why the session ended
         STATE.live = null;
+        if (ScopeDeskDesktop.available) ScopeDeskDesktop.stopAgent();
         ScopeDeskRTC.stopBridge();
         syncVendorNav();
         tickClocks();
@@ -975,9 +1052,26 @@ document.addEventListener('DOMContentLoaded', () => {
         syncAlertsButton();
         ScopeDeskRTC.startBridge(); // after a page reload, reconnect to the agent with the stored pairing token
         renderLiveBar();
+        startDesktopAgent(false);   // desktop app: start the host agent by itself, nothing to copy or run
     }
 
-    const AGENT_TEXT = { unknown: 'not running', offline: 'not running', waiting: `waiting for the approved app`, armed: 'enforcing', locked: 'locked after a violation' };
+    // ---- Desktop app: the host agent is started through the shell, never by hand ----
+    let desktopAgentOptOut = null;   // task the Client chose to stop remote control for; not restarted automatically
+    function startDesktopAgent(manual) {
+        if (!ScopeDeskDesktop.available || !STATE.live) return Promise.resolve();
+        const taskId = STATE.live.taskId;
+        if (!manual && desktopAgentOptOut === taskId) return Promise.resolve();
+        if (manual) desktopAgentOptOut = null;
+        return ScopeDeskDesktop.ensureAgent({
+            taskId,
+            getToken: async (id) => (await api(`/api/tasks/${id}/agent-token`, { method: 'POST' })).agentToken,   // stays in memory, never shown
+            setToken: (token) => ScopeDeskRTC.setAgentToken(token)   // lets this page hand the vendor's input to the agent
+        }).then((r) => { if (r && r.ok === false && r.error !== 'not-desktop') toast(r.error || 'Could not start the host agent.', true); })
+          .catch((err) => toast(err.message, true));
+    }
+    ScopeDeskDesktop.onStatus((st) => { STATE.desktopAgent = st; renderLiveBar(); });
+
+    const AGENT_TEXT = { unknown: 'not running', offline: 'not running', starting: 'starting...', error: 'could not start', waiting: `waiting for the approved app`, armed: 'Active Secured Session', locked: 'locked after a violation' };
     const SHARE_TEXT = { idle: 'not shared', starting: 'choosing screen...', waiting: 'shared, waiting for vendor', connecting: 'connecting...', live: 'live', lost: 'connection lost, retrying', stopped: 'stopped', closed: 'closed', expired: 'closed (time up)', violation: 'cut after a violation' };
 
     function renderLiveBar() {
@@ -991,8 +1085,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const v = STATE.rtcView || { conn: 'idle', agent: 'unknown' };
         const sharing = ['starting', 'waiting', 'connecting', 'live', 'lost'].includes(v.conn);
         $('liveShare').textContent = SHARE_TEXT[v.conn] || v.conn;
-        $('liveAgent').textContent = (AGENT_TEXT[v.agent] || v.agent).replace('the approved app', live.process || 'the approved app')
-            + (v.policy && !['unknown', 'offline'].includes(v.agent) ? ` (policy: ${v.policy}${v.policy === '(app only)' ? ', no folder policy found' : ''})` : '');
+        // In the desktop app the agent reports straight to this window, so the label updates the instant it changes
+        const da = STATE.desktopAgent;
+        let agentState = v.agent, policyName = v.policy;
+        if (da && da.phase !== 'stopped' && ['unknown', 'offline'].includes(agentState)) { agentState = da.uiState; policyName = policyName || da.policy; }
+        $('liveAgent').textContent = (AGENT_TEXT[agentState] || agentState).replace('the approved app', live.process || 'the approved app')
+            + (policyName && !['unknown', 'offline', 'starting', 'error'].includes(agentState) ? ` (policy: ${policyName}${policyName === '(app only)' ? ', no folder policy found' : ''})` : '')
+            + (agentState === 'error' && da && da.detail ? `: ${da.detail}` : '');
+        if (ScopeDeskDesktop.available) {
+            const agentOn = da && ['starting', 'connected', 'running'].includes(da.phase);
+            $('btnPairAgent').textContent = agentOn ? 'Stop remote control' : 'Start remote control';
+        }
         $('btnShareScreen').classList.toggle('hidden', sharing);
         if (v.shareSurface && v.shareSurface !== 'monitor') {
             $('liveShare').textContent += ' (window only: remote control needs your entire screen)';
@@ -1080,6 +1183,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     $('btnPairAgent').addEventListener('click', async () => {
         if (!STATE.live) return;
+        if (ScopeDeskDesktop.available) {   // desktop app: one button starts or stops remote control, no pairing dialog
+            const da = STATE.desktopAgent;
+            if (da && ['starting', 'connected', 'running'].includes(da.phase)) { desktopAgentOptOut = STATE.live.taskId; ScopeDeskDesktop.stopAgent(); }
+            else await startDesktopAgent(true);
+            return;
+        }
         $('agentError').classList.add('hidden');
         try {
             const { agentToken } = await api(`/api/tasks/${STATE.live.taskId}/agent-token`, { method: 'POST' });
@@ -1102,8 +1211,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ================= 8. STARTUP =================
-    ScopeDeskStatus.configure({ getBase: () => API_BASE || '', liveSession: () => !!STATE.live });
-    ScopeDeskStatus.onChange((online) => { if (online && STATE.user) loadTasks(); });
+    ScopeDeskStatus.configure({
+        getBase: () => API_BASE || '',
+        liveSession: () => !!STATE.live
+    });
+    ScopeDeskStatus.onChange((online) => {
+        if (!online) return;
+        if (!apiResolved || (API_BASE !== '' && !STATE.user)) { redirectToServerIfNeeded(); return; } // server came up while on Live Server
+        if (STATE.user) loadTasks();
+    });
 
     async function init() {
         const params = new URLSearchParams(window.location.search);
@@ -1117,6 +1233,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // If this page was opened from Live Server / a file, jump to the real ScopeDesk address.
         // (Live Server reloads the page whenever the database file changes, which made the app "glitch back to login".)
         if (await redirectToServerIfNeeded()) return;
+        ScopeDeskStatus.start(); // background health loop; begins only after the server address is known
 
         const saved = sessionStorage.getItem(TOKEN_KEY);
         if (!saved) return;
@@ -1136,15 +1253,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function redirectToServerIfNeeded() {
         await resolveApiBase();
-        if (API_BASE === '') return false; // already served by ScopeDesk
-        try {
-            const r = await fetch(API_BASE + '/api/health');
-            if ((await r.json()).app === 'scopedesk') {
-                window.location.replace(API_BASE + '/' + window.location.search);
-                return true;
-            }
-        } catch (_) { ScopeDeskStatus.reportDown(); /* server not running: the banner explains it */ }
-        return false;
+        if (!apiResolved) { ScopeDeskStatus.reportDown(); return false; } // verified by the monitor before any banner shows
+        if (API_BASE === '') return false;                                   // already served by ScopeDesk
+        window.location.replace(API_BASE + '/' + window.location.search);
+        return true;
     }
 
     // After a reload, a vendor returns straight to the live session they had open

@@ -17,7 +17,10 @@
 
   const set = (patch) => { Object.assign(view, patch); onChange({ ...view, role, taskId }); };
 
-  function init(opts) { api = opts.api; onChange = opts.onChange || onChange; }
+  function init(opts) {
+    api = opts.api; onChange = opts.onChange || onChange;
+    console.log('[ScopeDesk] WebRTC Engine Initialized'); // developer console only, never a popup
+  }
 
   // Called by script.js every time it (re)creates the app socket
   function bindSocket(s) {

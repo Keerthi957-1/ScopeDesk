@@ -12,7 +12,8 @@
 //   DEBUG_FOREGROUND=true  log the app name active-win reports, to find the right value for the task's approved app
 //   SESSION_CONFIG=file    per-session policy file: {taskId, scope, allowedProcesses, allowedDirectories}. Overrides policies.json
 //   BRIDGE_PORT=47600      local port the browser uses to hand data-channel input to this agent
-const normalize = (name) => String(name || '').toLowerCase().replace(/\.(exe|app)$/i, '').replace(/\s+/g, '').trim();
+// One normal form for app names: trimmed FIRST (so " Billing.EXE " still loses its extension), Unicode-folded, lower case, no .exe/.app, no spaces
+const normalize = (name) => String(name || '').normalize('NFKC').trim().toLowerCase().replace(/\.(exe|app)$/i, '').replace(/\s+/g, '').trim();
 
 module.exports = {
   SERVER_URL: process.env.SERVER_URL || 'http://localhost:3000',

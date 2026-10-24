@@ -321,6 +321,7 @@
                         </div>
                         <div class="emulator-footer-controls">
                             <span class="text-green" id="emulatorStatusBadge">Connecting...</span>
+                            <button id="btnOpenViewport" type="button" class="btn-ghost">Open full-screen workspace</button>
                             <button id="btnEndSession" class="btn-danger">End Session</button>
                         </div>
                     </div>
@@ -534,10 +535,11 @@
         </div>
     </div>
 
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="http://localhost:3000/socket.io/socket.io.js"></script>
     <script src="status-monitor.js?v=1"></script>
     <script src="remote-input.js?v=1"></script>
     <script src="webrtc.js?v=3"></script>
+    <script src="desktop-bridge.js?v=1"></script>
     <script src="script.js?v=6"></script>
 </body>
 </html>

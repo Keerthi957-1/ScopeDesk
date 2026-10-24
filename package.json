@@ -2,11 +2,16 @@
   "name": "scopedesk",
   "version": "3.1.0",
   "description": "ScopeDesk: Secure Task-Bounded Remote Support Desktop Application",
-  "main": "server.js",
+  "main": "desktop/main.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "setup-email": "node setup-email.js"
+    "setup-email": "node setup-email.js",
+    "desktop": "electron .",
+    "setup:desktop": "npm install && npm --prefix agent install",
+    "dist": "npm --prefix agent install && electron-builder",
+    "test:desktop": "node --test \"desktop/test/*.test.js\"",
+    "find-alerts": "node tools/find-alerts.js"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -27,5 +32,36 @@
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^7.0.0",
     "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.scopedesk.desktop",
+    "productName": "ScopeDesk",
+    "files": [
+      "desktop/**",
+      "public/**",
+      "server/**",
+      "server.js",
+      "db.js",
+      "agent/**",
+      "package.json",
+      "!agent/test/**",
+      "!extras-for-old-copy/**"
+    ],
+    "asarUnpack": [
+      "agent/**"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }

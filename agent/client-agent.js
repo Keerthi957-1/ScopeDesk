@@ -18,6 +18,8 @@ const { loadPolicy } = require('./policy');
 const { createPathProbe } = require('./path-probe');
 
 const stamp = () => new Date().toLocaleTimeString();
+// When the desktop app starts the agent, status messages travel to it over IPC (no-op when run from a terminal)
+const notify = (msg) => { if (typeof process.send === 'function') { try { process.send(msg); } catch (_) { /* parent gone */ } } };
 const log = (level, msg) => (level === 'warn' || level === 'error' ? console.error : console.log)(`[AGENT ${stamp()}] ${msg}`);
 
 if (!cfg.TOKEN) {
@@ -31,13 +33,16 @@ let monitor = null, injector = null, bridge = null, taskId = null, expiryTimer =
 async function shutdown(code, why) {
   log('info', why);
   try { if (injector) await injector.releaseAll(); if (monitor) monitor.stop(); } catch (_) {}
-  process.exit(code);
+  notify({ type: 'ended', code, reason: why });
+  setTimeout(() => process.exit(code), typeof process.send === 'function' ? 150 : 0); // let the last IPC message out
 }
+process.on('message', (m) => { if (m && m.type === 'stop') shutdown(0, 'Stopped by the Client.'); });
 process.on('SIGINT', () => shutdown(0, 'Stopped by the Client.'));
 process.on('SIGTERM', () => shutdown(0, 'Stopped.'));
 
 socket.on('connect', () => {
   log('info', 'Connected to ScopeDesk.');
+  notify({ type: 'connected' });
   socket.emit('agent-hello', {}, async (res) => {
     if (!res || !res.ok) return shutdown(1, (res && res.error) || 'The server refused this agent.');
     if (started) return; // reconnect: the monitor is already running
@@ -55,9 +60,10 @@ socket.on('connect', () => {
     monitor = new ForegroundMonitor({
       policy, probe, pollMs: cfg.POLL_MS, strikes: cfg.STRIKES, attributionMs: cfg.ATTRIBUTION_MS, log,
       debug: cfg.DEBUG_FOREGROUND,
-      onState: (state) => { log('info', `State: ${state}`); socket.emit('agent-state', { taskId, state, policy: policy.name }); if (bridge) bridge.broadcast({ t: 'state', state }); if (state === 'locked') injector.releaseAll(); },
+      onState: (state) => { log('info', `State: ${state}`); notify({ type: 'state', state, policy: policy.name }); socket.emit('agent-state', { taskId, state, policy: policy.name }); if (bridge) bridge.broadcast({ t: 'state', state }); if (state === 'locked') injector.releaseAll(); },
       onViolation: ({ processName, kind, detail }) => {
         log('error', `VIOLATION (${kind}): ${processName}${detail ? ' -> ' + detail : ''}. Input locked, reporting.`);
+        notify({ type: 'violation', kind, processName });
         process.stdout.write('\x07'); // audible bell
         if (bridge) bridge.broadcast({ t: 'halt', reason: 'violation', kind, detail }); // the Client's browser drops the WebRTC link NOW, before the server round trip
         socket.emit('host-violation', { taskId, processName, kind, detail }, (ack) => { if (ack && !ack.ok) log('warn', 'Server did not accept the report: ' + ack.error); });
@@ -82,6 +88,7 @@ socket.on('connect', () => {
     log('info', `Task #${taskId} "${res.title}". Policy: ${policy.name}. Allowed apps: ${policy.appList.join(', ')}.` + (policy.allowedPaths.length ? ` Allowed folders: ${policy.allowedPaths.join(' | ')}.` : ''));
     log('info', 'Open an allowed app (or an allowed folder in the file manager) so the session can start.');
     socket.emit('agent-state', { taskId, state: monitor.state, policy: policy.name });
+    notify({ type: 'state', state: monitor.state, policy: policy.name });
 
     // Defence in depth: also stop locally when the window ends, even if the server cannot be reached
     const msLeft = Date.parse(res.windowEnd) - (Date.now() + (res.serverTime - Date.now()));
