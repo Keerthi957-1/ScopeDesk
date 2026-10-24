@@ -22,12 +22,6 @@
   let beforeProbe = null;            // optional async hook: lets the page re-locate the server before each check
   let banner;
 
-  // The server is hosted (Railway); nothing is started on this computer, so the steps are about the connection and the host.
-  const hints = [
-    'Check that this computer is connected to the internet.',
-    'The server may be restarting after an update. That usually takes under a minute, and this page reconnects by itself.',
-    'If it does not come back, whoever runs ScopeDesk should check the deployment and its logs on Railway.'
-  ];
 
   function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; }
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -65,7 +59,8 @@
       text.append(el('p', 'srv-live', 'A live session is open: screen sharing and remote control are paused, and the session timer keeps running on the server.'));
     }
     const steps = el('ol', 'srv-steps');
-    hints.forEach((t) => steps.append(el('li', '', t)));
+    ['Check that this computer is online.', 'If it is, the ScopeDesk service may be restarting. This page reconnects by itself, nothing to run or install.']
+      .forEach((t) => steps.append(el('li', '', t)));
     text.append(steps);
 
     const side = el('div', 'srv-side');

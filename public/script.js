@@ -1,25 +1,35 @@
+window.SCOPEDESK_BUILD = '2026-10-24-a';
 // Safety net: no form on this page may ever submit natively. A native submit reloads the page and looks like a "logout".
 document.addEventListener('submit', (e) => e.preventDefault(), true);
 
 document.addEventListener('DOMContentLoaded', () => {
 
-    // Where is the ScopeDesk backend? (the live server on Railway; nothing runs on this computer)
-    //   1) same origin: the page was loaded from the ScopeDesk server itself (the normal case on Railway)
-    //   2) API_URL from config.js: the live server's address, for pages opened from anywhere else
-    //   3) an address saved for testing:  localStorage.setItem('scopedesk_api', 'https://...')
-    //   4) http://localhost:3000, ONLY when this page itself is open on this computer (development)
+    // Where is the ScopeDesk backend?
+    //   1) same origin: the page was opened from the live ScopeDesk server (the normal case, also inside the desktop app)
+    //   2) an address saved in this browser: localStorage.setItem('scopedesk_api', 'https://your-app.up.railway.app')
+    //   3) "serverUrl" in app-config.json (the production address)
     // Every check has a timeout, so a dead address can never hang the login screen.
     let API_BASE = null;
     let apiResolved = false;
-    const trimSlash = (v) => String(v || '').trim().replace(/\/+$/, '');
-    const configuredApi = () => trimSlash(window.SCOPEDESK_CONFIG && window.SCOPEDESK_CONFIG.API_URL);
-    const savedApi = () => { try { return trimSlash(localStorage.getItem('scopedesk_api')); } catch (_) { return ''; } };
-    const pageIsOnThisComputer = () => ['localhost', '127.0.0.1', ''].includes(window.location.hostname);
-    const API_CANDIDATES = () => ['', configuredApi(), savedApi(), pageIsOnThisComputer() ? 'http://localhost:3000' : '']
-        .filter((v, i, a) => (v === '' || v) && a.indexOf(v) === i);
+    async function configuredServerUrl() {
+        try {
+            const r = await fetch('app-config.json', { cache: 'no-store' });
+            const d = await r.json();
+            return String((d && d.serverUrl) || '').trim().replace(/\/+$/, '');
+        } catch (_) { return ''; }
+    }
+    async function apiCandidates() {
+        let saved = '';
+        try { saved = (localStorage.getItem('scopedesk_api') || '').replace(/\/+$/, ''); } catch (_) { /* storage blocked */ }
+        const configured = await configuredServerUrl();
+        // Developer convenience only: a page opened from THIS computer (Live Server, a local file) may also find a local server on port 3100 (the launcher) or 3000.
+        // It is tried last, so a configured Railway address always wins, and it is never used by a page served from the internet.
+        const onThisComputer = ['localhost', '127.0.0.1', '[::1]', ''].includes(window.location.hostname);
+        return ['', saved, configured, ...(onThisComputer ? ['http://localhost:3100', 'http://localhost:3000'] : [])].filter((v, i, a) => a.indexOf(v) === i && (v === '' || v));
+    }
     async function isScopeDesk(base) {
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 2500);
+        const timer = setTimeout(() => ctrl.abort(), 4000);
         try {
             const r = await fetch(base + '/api/health', { cache: 'no-store', signal: ctrl.signal });
             const d = await r.json();
@@ -29,11 +39,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     async function resolveApiBase() {
         if (apiResolved) return;
-        for (const base of API_CANDIDATES()) {
+        const candidates = await apiCandidates();
+        for (const base of candidates) {
             if (await isScopeDesk(base)) { API_BASE = base; apiResolved = true; return; }
         }
-        // Not found (server down). Use a default so requests fail cleanly, and look again on the next call.
-        if (API_BASE === null) API_BASE = configuredApi() || savedApi() || (pageIsOnThisComputer() ? 'http://localhost:3000' : '');
+        // Not reachable right now. Requests go to the configured address (or this page's own origin) and fail cleanly; we look again on the next call.
+        if (API_BASE === null) API_BASE = candidates.filter(Boolean)[0] || '';
     }
 
     // ================= STATE =================
@@ -100,10 +111,11 @@ document.addEventListener('DOMContentLoaded', () => {
         let response;
         try {
             await resolveApiBase();
+            if (!apiResolved) throw new Error('no server');   // nothing answered as ScopeDesk: say so plainly instead of posting to the wrong place
             response = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
         } catch (_) {
             if (window.ScopeDeskStatus) ScopeDeskStatus.reportDown(); // the banner explains how to restart the server
-            throw new Error('Cannot reach the server. Is "npm start" running?');
+            throw new Error('Cannot reach the ScopeDesk server. Open ScopeDesk at your Railway address (not Live Server or a saved file), or set "serverUrl" in public/app-config.json.');
         }
 
         // The server renews your login while you are active; keep the newest token
@@ -128,7 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
             throw new Error('Session expired.');
         }
         if (!response.ok) {
-            throw new Error(data.error || `The server answered with status ${response.status} but not from ScopeDesk. Check the server address (API_URL in config.js) or try again in a minute.`);
+            throw new Error(data.error || `The server answered with status ${response.status} but not from ScopeDesk. Check the server address in app-config.json.`);
         }
         return data;
     }
@@ -1195,8 +1207,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { agentToken } = await api(`/api/tasks/${STATE.live.taskId}/agent-token`, { method: 'POST' });
             ScopeDeskRTC.setAgentToken(agentToken); // the page will also hand the vendor's data-channel input to the agent
             $('cmdToken').textContent = agentToken;
-            const origin = API_BASE || window.location.origin; // the live server's address
-            $('cmdServer').textContent = origin;
+            const origin = window.location.origin;
             agentCmd.win = `set SERVER_URL=${origin}&& set SCOPEDESK_AGENT_TOKEN=${agentToken}&& npm start`;
             agentCmd.unix = `SERVER_URL=${origin} SCOPEDESK_AGENT_TOKEN=${agentToken} npm start`;
             $('cmdWindows').textContent = agentCmd.win;

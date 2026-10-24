@@ -1,115 +1,46 @@
 'use strict';
 // ScopeDesk desktop shell (Electron main process).
-// Double-click the app and it: starts the ScopeDesk server in the background (if one is not already running),
-// opens the dashboard in a window, and starts/stops the host agent on request of the page. No terminal is shown.
+// Double-click the app and it opens your live ScopeDesk server (Railway) in a window and starts/stops the host agent
+// on request of the page. No server runs on this computer and no terminal is shown.
 //
 // Safety rules built in:
 //   * remote control exists only while this window is open: closing the window stops the agent (nothing keeps running hidden)
 //   * the window title and a system notification say when remote control is active, and the page has a Stop button
 //   * only the ScopeDesk page itself can call the agent IPC channels, and it can only send {taskId, token}
 //   * the agent still enforces the task's allowed apps/folders and the time window (agent/policy.js, monitor.js)
-const { app, BrowserWindow, ipcMain, session, desktopCapturer, shell, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, session, desktopCapturer, shell, Notification, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const http = require('http');
-const https = require('https');
-const crypto = require('crypto');
-const { fork, spawn } = require('child_process');
 const { createAgentRunner } = require('./agent-runner');
 const { validateAgentConfig, isTrustedSender } = require('./validate');
-const { normalizeServerUrl } = require('../agent/server-url');
+const { resolveServerUrl } = require('./config');
 
-const APP_DIR = path.join(__dirname, '..');
-const AGENT_DIR = path.join(APP_DIR.replace('app.asar', 'app.asar.unpacked'), 'agent'); // native modules cannot run from inside an asar
-const PORT = Number(process.env.PORT || 3000);
-// The app is a pure client of the live ScopeDesk server (Railway). Its address comes from, in this order:
-//   1) the SCOPEDESK_SERVER_URL environment variable   2) "serverUrl" in desktop/app-config.json (the normal place)
-// No server is started on this computer. For DEVELOPMENT ONLY, set SCOPEDESK_LOCAL_SERVER=1 to run a local one instead.
-function readAppConfig() { try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'app-config.json'), 'utf8')); } catch (_) { return {}; } }
-const LOCAL_DEV = process.env.SCOPEDESK_LOCAL_SERVER === '1';
-const CONFIGURED = (process.env.SCOPEDESK_SERVER_URL || readAppConfig().serverUrl || '').trim();
-const RESOLVED = CONFIGURED ? normalizeServerUrl(CONFIGURED) : null;
-const REMOTE_SERVER = RESOLVED && RESOLVED.ok ? RESOLVED.url : '';
-const CONFIG_ERROR = RESOLVED
-  ? (RESOLVED.ok ? '' : RESOLVED.error)
-  : (LOCAL_DEV ? '' : 'No server address is set. Put your live ScopeDesk address (https://your-app.up.railway.app) in desktop/app-config.json as "serverUrl", then start the app again.');
-const SERVER_URL = REMOTE_SERVER || `http://localhost:${PORT}`;
-const DATA_DIR = path.join(app.getPath('userData'), 'data');
+// The server lives on Railway; nothing is started on this computer except the host agent, and only during a session.
+const AGENT_DIR = app.isPackaged ? path.join(process.resourcesPath, 'agent') : path.join(__dirname, '..', 'agent');
+const CONFIG_FILE = app.isPackaged ? path.join(process.resourcesPath, 'app-config.json') : path.join(__dirname, '..', 'public', 'app-config.json');
+const target = resolveServerUrl({ env: process.env, readConfigFile: () => fs.readFileSync(CONFIG_FILE, 'utf8') });
+const SERVER_URL = target.url;   // '' when no valid address is configured
 
-let win = null, serverChild = null, runner = null;
+let win = null, runner = null;
 
 // ---------- helpers ----------
-function healthy(url) {
-  return new Promise((resolve) => {
-    const client = url.startsWith('https:') ? https : http;   // http.get() throws on an https address
-    const req = client.get(`${url}/api/health`, { timeout: url.startsWith('https:') ? 6000 : 1500 }, (res) => {
-      let body = '';
-      res.on('data', (d) => { body += d; });
-      res.on('end', () => { try { resolve(JSON.parse(body).app === 'scopedesk'); } catch (_) { resolve(false); } });
-    });
-    req.on('timeout', () => { req.destroy(); resolve(false); });
-    req.on('error', () => resolve(false));
-  });
+async function healthy(url) {
+  try {
+    const res = await net.fetch(`${url}/api/health`, { signal: AbortSignal.timeout(5000), cache: 'no-store' });
+    if (!res.ok) return false;
+    const d = await res.json();
+    return !!(d && d.app === 'scopedesk');
+  } catch (_) { return false; }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function persistentSecret() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const file = path.join(DATA_DIR, 'jwt_secret');
-  try { return fs.readFileSync(file, 'utf8').trim(); } catch (_) { /* first run */ }
-  const secret = crypto.randomBytes(48).toString('hex');
-  fs.writeFileSync(file, secret, { mode: 0o600 });
-  return secret;
-}
-
-// ---------- local server ----------
-function launchServer(useSystemNode) {
-  const logFd = fs.openSync(path.join(DATA_DIR, 'server.log'), 'a');
-  const env = {
-    ...process.env, PORT: String(PORT), HOST: process.env.HOST || '127.0.0.1',
-    DB_PATH: path.join(DATA_DIR, 'scopedesk.db'), JWT_SECRET: persistentSecret(), CORS_ORIGIN: SERVER_URL
-  };
-  const serverJs = path.join(APP_DIR, 'server.js');
-  let child;
-  if (useSystemNode) {
-    child = spawn('node', [serverJs], { cwd: APP_DIR, env, windowsHide: true, stdio: ['ignore', logFd, logFd] });
-  } else {
-    env.ELECTRON_RUN_AS_NODE = '1';
-    child = fork(serverJs, [], { cwd: APP_DIR, env, execPath: process.execPath, windowsHide: true, stdio: ['ignore', logFd, logFd, 'ipc'] });
-  }
-  child.exited = false;
-  child.on('exit', () => { child.exited = true; });
-  child.on('error', () => { child.exited = true; });
-  return child;
-}
-
-async function waitHealthy(child, ms) {
+// A Railway service that is restarting or redeploying can take a while: keep trying before giving up
+async function waitForServer(url, ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
-    if (await healthy(SERVER_URL)) return true;
-    if (child && child.exited) return false;
-    await sleep(400);
+    if (await healthy(url)) return true;
+    await sleep(1500);
   }
   return false;
-}
-
-async function ensureServer() {
-  if (CONFIG_ERROR) throw new Error(CONFIG_ERROR);
-  if (REMOTE_SERVER) {
-    // The hosted server may be waking up or restarting after an update, so give it a little while
-    if (await waitHealthy(null, 25000)) return;
-    throw new Error(`Cannot reach the ScopeDesk server at ${SERVER_URL}. Check your internet connection. If it is fine, the server may be down: try again in a minute.`);
-  }
-  if (await healthy(SERVER_URL)) return;                      // development: already running
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  // 1) the runtime bundled inside the app; 2) if that cannot run the server (e.g. no node:sqlite), Node installed on this PC
-  for (const useSystemNode of [false, true]) {
-    serverChild = launchServer(useSystemNode);
-    if (await waitHealthy(serverChild, 20000)) return;
-    try { serverChild.kill(); } catch (_) { /* already gone */ }
-    serverChild = null;
-  }
-  throw new Error(`The ScopeDesk server did not start. Details are in ${path.join(DATA_DIR, 'server.log')}`);
 }
 
 // ---------- window ----------
@@ -191,16 +122,12 @@ if (!app.requestSingleInstanceLock()) {
     configureSession();
     setupAgentIpc();
     createWindow();
-    try {
-      await ensureServer();
-      if (win) await win.loadURL(SERVER_URL);
-    } catch (e) {
-      showError(e.message);
-    }
+    if (target.error) return showError(target.error);
+    if (!(await waitForServer(SERVER_URL, 60000))) return showError(`Cannot reach ScopeDesk at ${SERVER_URL}. Check your internet connection, then open the app again.`);
+    if (win) await win.loadURL(SERVER_URL);
   });
   app.on('window-all-closed', () => app.quit());       // every platform: closing the window ends everything
   app.on('before-quit', () => {
     if (runner) runner.stop('app closed');
-    if (serverChild && !serverChild.exited) { try { serverChild.kill(); } catch (_) { /* ignore */ } }
   });
 }

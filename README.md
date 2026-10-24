@@ -1,33 +1,16 @@
 # ScopeDesk: Secure Task-Bounded Remote Support
 
 Clients create a task (allowed app + time window) and get a one-time token. A Vendor enters the token to start a session.
-If the vendor's monitor detects an out-of-bounds app, the **Client** gets an alert with a **Terminate Connection** button.
+If the vendor's monitor detects an out-of-bounds app, the **Client** gets an alert with a **Terminate Session Now** button.
 
-## Hosted on Railway (nothing runs on your computer)
-ScopeDesk is a hosted service. The server runs on Railway and serves both the web pages and the API from one address, so
-**people just open that address** (for example `https://your-app.up.railway.app`). There is no local server, no `npm start`, and
-no `.bat` / `.command` file to run for the server.
+## How it runs
+ScopeDesk runs on **Railway** (see `RAILWAY.md`). Open your Railway address in a browser, or use the desktop app (`DESKTOP.md`).
+No server, `.bat` file or terminal is needed on users' computers.
 
-### Deploy / configure on Railway
-1. Create a Railway service from this repository. `railway.json` already sets the start command (`node server.js`), the health check (`/api/health`) and a single instance. Do not scale to several replicas: live sessions, rooms and timers are kept in memory.
-2. **Variables** (Railway > service > Variables). See `.env.example` for the full list. Required:
-   - `JWT_SECRET`: a long random string. Without it everybody is signed out after every deploy.
-   - `NODE_ENV=production`
-   - `ELECTRON_SKIP_BINARY_DOWNLOAD=1`: keeps the build from downloading the desktop app's Electron binary.
-3. **Volume**: add a Volume (mount path `/data`). The database and the signing secret are stored on it automatically. **Without a volume every account and task is deleted on each redeploy.**
-4. Optional: `SMTP_*` for password-reset emails, `CORS_ORIGIN` if another website must call the API, `TURN_*` (below).
-5. Open the public address Railway gives you. Demo accounts (password `Password123!`): `office_admin` (client), `it_vendor` (vendor).
+To try it on your own computer first: double-click `start-local-windows.bat` (Mac/Linux: `start-local-mac-linux.command`). It installs what is needed, starts a local copy and opens http://localhost:3100 (its own port, so an older ScopeDesk window cannot get in the way). The bottom-right corner of the page shows `build 2026-10-24-a`; if you do not see it, you are looking at old files. Use only that address, not VS Code Live Server.
 
-The server finds its own public address from Railway (`RAILWAY_PUBLIC_DOMAIN`), so reset-email links are correct without setting `APP_URL`.
-
-### Where the live address is set (only if you need it)
-- **Browser:** nothing. Open the Railway address. Only if the page files are opened from somewhere else, set `API_URL` in `public/config.js`.
-- **Desktop app:** `desktop/app-config.json` -> `"serverUrl": "https://your-app.up.railway.app"` (or the `SCOPEDESK_SERVER_URL` environment variable). The app refuses to start without it and never starts a local server.
-- **Host agent:** started by the desktop app with the same address. Run by hand, it needs `SERVER_URL` (the launcher scripts ask for it).
-- Addresses must be `https://` (an `http://` address is accepted only for a server on the same computer, for development).
-
-### WebRTC across the internet needs TURN
-The screen and control data travel directly between the two computers. Railway only carries the sign-in and signaling traffic and **cannot host a TURN relay (no UDP)**. Between two different networks (offices, mobile data) direct connections often fail without one. Use a hosted TURN service or your own coturn elsewhere and set `TURN_URLS` and `TURN_SECRET` (see `.env.example`). It also makes the stream stop exactly when the time window ends.
+Demo accounts exist only in a local development database (password `Password123!`; never created in production): `office_admin` (client), `it_vendor` (vendor).
+The two seeded demo tokens expire 30-45 minutes after the database is first created, so create a fresh task to test.
 
 ## Run a real remote session
 1. **Client PC:** `cd agent && npm install` once. Sign in as `office_admin`, create a task (approved app, e.g. `billing.exe`, and a time window).
@@ -35,7 +18,7 @@ The screen and control data travel directly between the two computers. Railway o
 3. **Client:** a dialog asks to share the screen. Choose **Entire screen**. Open the approved app.
 4. **Client:** click **Pair host agent**, copy the command, run it in the `agent` folder. The live bar shows *Host agent: enforcing* once the approved app is in front.
 5. **Vendor:** click the remote screen to take control. Mouse, wheel and keyboard are mirrored.
-6. Bring any other app to the front (Chrome, Explorer...) and the Client sees the red alert with **Terminate Connection**. Control halts at once; the stream is cut unless `AUTO_CUT_STREAM=false`.
+6. Bring any other app to the front (Chrome, Explorer...) and the Client sees the red alert with **Terminate Session Now**. Control halts at once; the stream is cut unless `AUTO_CUT_STREAM=false`.
 7. At 00:00 the server ends the task, tells both browsers to close the peer connection, stops input and stops the agent.
 
 ## How it is built
@@ -55,23 +38,27 @@ Notes: the agent needs OS permissions on first run (macOS: Screen Recording and 
 - **Report** saves a report (reason + details) in the database for administrator review.
 
 ## Password reset emails (real email)
-"Forgot password?" emails the user a link that works for 30 minutes. Set these in **Railway > Variables** (Gmail example):
+Easiest: double-click `setup-email-windows.bat` (or run `setup-email-mac-linux.command`, or `npm run setup-email`). It asks for your Gmail address and App Password, sends you a test email, and saves the settings.
+
+Manual way:
+"Forgot password?" emails the user a link that works for 30 minutes. To turn on real email (Gmail example):
 1. In your Google Account: Security, turn on **2-Step Verification**, then search for **App passwords** and create one. Copy the 16 letters.
-2. Set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, `SMTP_USER` (your Gmail address), `SMTP_PASS` (the app password) and `MAIL_FROM`.
-3. Redeploy. The deploy log should say `[MAIL] Email is ready`.
+2. In this folder, copy `.env.example` to a new file named `.env`.
+3. Fill in `SMTP_USER` (your Gmail address), `SMTP_PASS` (the app password) and `MAIL_FROM`.
+4. Run `npm install`, then restart ScopeDesk. The console should say `[MAIL] Email is ready`.
 
-Until these are set no email is sent. The link in the email opens the server's public address (`APP_URL`, found automatically on Railway).
+Until `.env` is filled in, no email is sent. The reset link is printed in the console and shown on the page so you can still test.
+The link in the email opens `APP_URL`. On Railway it defaults to your generated domain.
 
-## Open ScopeDesk only through the live address
-The Client and the Vendor both open the Railway address (or use the desktop app, which does the same). Do not open an HTML file directly or use VS Code Live Server. Use a second browser profile or a private window for the second account (logins are per tab).
+## Open ScopeDesk only through the server
+Both the Client and the Vendor open your Railway address (or the desktop app). Do not use VS Code Live Server or open an HTML file directly. Use a second browser profile or a private window for the second account (logins are per tab).
 
 ## Staying signed in
 Logins last 7 days and renew automatically while you are using the app. Tasks have their own time window, and a task expiring never signs you out.
 
 ## Folder layout
 - `server.js`: API + Socket.IO. `db.js`: SQLite. `public/`: the web UI (only this folder is served).
-- `.jwt_secret` is only created when `JWT_SECRET` is not set (on Railway it lives on the volume). Never commit it or share it.
-- `railway.json`, `.nvmrc`, `.env.example`: hosting configuration.
+- `.jwt_secret` is created on first run. Never commit it or share it.
 
 ## Live screen
 See "Run a real remote session" above.

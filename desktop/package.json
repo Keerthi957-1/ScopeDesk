@@ -1,0 +1,28 @@
+{
+  "name": "scopedesk-desktop",
+  "version": "1.0.0",
+  "description": "ScopeDesk desktop app: opens the live ScopeDesk server and runs the host agent during a session",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "dist": "npm --prefix ../agent install && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.scopedesk.desktop",
+    "productName": "ScopeDesk",
+    "files": ["main.js", "preload.js", "agent-runner.js", "validate.js", "config.js", "splash.html", "package.json"],
+    "extraResources": [
+      { "from": "../agent", "to": "agent", "filter": ["**/*", "!test/**", "!start-agent-*"] },
+      { "from": "../public/app-config.json", "to": "app-config.json" }
+    ],
+    "win": { "target": "nsis" },
+    "mac": { "target": "dmg" },
+    "linux": { "target": "AppImage" }
+  }
+}

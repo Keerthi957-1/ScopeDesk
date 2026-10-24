@@ -9,7 +9,7 @@
   .spin{width:28px;height:28px;border:3px solid #28404f;border-top-color:#1fbf8f;border-radius:50%;margin:0 auto 16px;animation:s 1s linear infinite}
   @keyframes s{to{transform:rotate(360deg)}} .err h1{color:#ff8a7a} .err .spin{display:none}
 </style></head>
-<body><div class="box" id="box"><div class="spin"></div><h1 id="t">Starting ScopeDesk…</h1><p id="m">Getting things ready.</p></div>
+<body><div class="box" id="box"><div class="spin"></div><h1 id="t">Connecting to ScopeDesk…</h1><p id="m">Reaching the server, one moment.</p></div>
 <script>
   const q = new URLSearchParams(location.search).get('error');
   if (q) { document.getElementById('box').className = 'box err'; document.getElementById('t').textContent = 'ScopeDesk could not start'; document.getElementById('m').textContent = q; }

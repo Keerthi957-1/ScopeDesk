@@ -3,8 +3,7 @@
 //
 //   SCOPEDESK_AGENT_TOKEN  required. Copy it from the Client dashboard ("Pair host agent"). Valid for ONE task only and
 //                          expires when the task window ends.
-//   SERVER_URL             REQUIRED: the live ScopeDesk server, e.g. https://your-app.up.railway.app (https only; http is accepted
-//                          only for a server on this same computer). The desktop app sets this for you.
+//   SERVER_URL             the ScopeDesk server (your Railway address). Default: "serverUrl" in public/app-config.json. The desktop app sets it for you.
 //   POLL_MS                foreground check interval, default 400
 //   STRIKES                consecutive bad polls before reporting, default 2 (filters Alt+Tab flicker)
 //   ATTRIBUTION_MS         a foreground change is blamed on the vendor only if vendor input was applied this recently, default 2500
@@ -16,8 +15,13 @@
 // One normal form for app names: trimmed FIRST (so " Billing.EXE " still loses its extension), Unicode-folded, lower case, no .exe/.app, no spaces
 const normalize = (name) => String(name || '').normalize('NFKC').trim().toLowerCase().replace(/\.(exe|app)$/i, '').replace(/\s+/g, '').trim();
 
+// Production address shared with the web app and the desktop app (public/app-config.json)
+function configuredServerUrl() {
+  try { return String(JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '..', 'public', 'app-config.json'), 'utf8')).serverUrl || '').trim(); } catch (_) { return ''; }
+}
+
 module.exports = {
-  SERVER_URL: process.env.SERVER_URL || '',
+  SERVER_URL: (process.env.SERVER_URL || configuredServerUrl()).replace(/\/+$/, ''),
   TOKEN: process.env.SCOPEDESK_AGENT_TOKEN || (process.argv.find((a) => a.startsWith('--token=')) || '').slice(8),
   POLL_MS: Number(process.env.POLL_MS || 400),
   STRIKES: Number(process.env.STRIKES || 2),

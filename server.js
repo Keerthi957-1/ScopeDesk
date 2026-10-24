@@ -27,30 +27,23 @@ const { buildRtcConfig } = require('./server/rtc-config');
 
 const app = express();
 const server = http.createServer(app);
-// Who may call the API from another website. Opened at its own Railway address, the browser never needs this (same origin).
-//   production:  only the addresses in CORS_ORIGIN (comma separated), nothing else
-//   development: also localhost and VS Code Live Server
-const DEV_ORIGINS = ['http://127.0.0.1:5500', 'http://localhost:5500']; // VS Code Live Server
-const EXTRA_ORIGINS = String(process.env.CORS_ORIGIN || '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+// The app is served by this same server, so the browser and the desktop app normally make same-origin requests.
+// Extra origins: CORS_ORIGIN (comma list), APP_URL, and Railway's public domain. localhost origins are allowed only outside production.
+const PUBLIC_ORIGINS = [process.env.CORS_ORIGIN, process.env.APP_URL, process.env.RAILWAY_PUBLIC_DOMAIN && `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`]
+  .filter(Boolean).flatMap((v) => v.split(',')).map((v) => v.trim().replace(/\/+$/, '')).filter(Boolean);
 function corsOrigin(origin, cb) {
-  const dev = !IS_PRODUCTION && (DEV_ORIGINS.includes(origin) || origin === 'null' || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || ''));
-  cb(null, !origin || dev || EXTRA_ORIGINS.includes(origin));
+  const dev = !IS_PRODUCTION && (origin === 'null' || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || ''));
+  cb(null, !origin || dev || PUBLIC_ORIGINS.includes(origin));
 }
 const io = new Server(server, { cors: { origin: corsOrigin } });
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
-// Railway sets these for you; NODE_ENV=production is also honoured anywhere else
-const ON_RAILWAY = !!(process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
-const IS_PRODUCTION = process.env.NODE_ENV === 'production' || ON_RAILWAY;
-// The public address of this server, used in password-reset emails. On Railway it is taken from the service's public domain.
+// Railway sets RAILWAY_PROJECT_ID on every deployment, so a Railway deploy is always treated as production
+const BUILD = '2026-10-24-a'; // shown on the page so you can tell which version you are looking at
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_PROJECT_ID;
 const APP_URL = (process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`)).replace(/\/+$/, '');
-
-// Behind Railway's proxy every request arrives from the proxy. Without this, req.ip is the same for everybody, so the login and
-// password-reset rate limits (keyed on req.ip) would lock ALL users out after a few failures from anyone.
-// TRUST_PROXY=0 turns it off; a number is how many proxy hops to trust (default 1 when hosted).
-const trustProxy = process.env.TRUST_PROXY !== undefined ? (Number.isNaN(Number(process.env.TRUST_PROXY)) ? process.env.TRUST_PROXY : Number(process.env.TRUST_PROXY)) : (IS_PRODUCTION ? 1 : false);
-app.set('trust proxy', trustProxy);
+if (IS_PRODUCTION) app.set('trust proxy', 1); // behind Railway's proxy: real client IPs for rate limits
 
 // ================= EMAIL (SMTP) =================
 // Real emails are sent when SMTP_HOST, SMTP_USER and SMTP_PASS are set in .env. Without them the reset link is printed in this console.
@@ -60,7 +53,7 @@ const MAIL_FROM = process.env.MAIL_FROM || `ScopeDesk <${process.env.SMTP_USER |
 (function setupMailer() {
   const { SMTP_HOST, SMTP_USER } = process.env;
   if (!SMTP_HOST || !SMTP_USER || !process.env.SMTP_PASS) {
-    console.warn('[MAIL] Email is NOT set up, so password-reset emails cannot be sent. Set SMTP_HOST, SMTP_USER and SMTP_PASS (and optionally SMTP_PORT, MAIL_FROM) as environment variables (Railway > Variables when hosted, .env locally).');
+    console.warn('[MAIL] Email is NOT set up, so password-reset emails cannot be sent. Run "npm run setup-email" once to fix this.');
     return;
   }
   let nodemailer;
@@ -76,7 +69,7 @@ const MAIL_FROM = process.env.MAIL_FROM || `ScopeDesk <${process.env.SMTP_USER |
   mailer = nodemailer.createTransport({ host: SMTP_HOST, port, secure: port === 465, auth: { user: SMTP_USER, pass } });
   mailer.verify()
     .then(() => console.log(`[MAIL] Email is ready (${SMTP_HOST}). Reset emails are sent from ${MAIL_FROM}`))
-    .catch((err) => console.warn(`[MAIL] Could not log in to the email server: ${err.message}\n       Check SMTP_USER / SMTP_PASS in your environment variables (Gmail needs an App Password).`));
+    .catch((err) => console.warn(`[MAIL] Could not log in to the email server: ${err.message}\n       Check SMTP_USER / SMTP_PASS in .env (Gmail needs an App Password).`));
 })();
 
 const escapeHtml = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -107,16 +100,15 @@ const USERNAME_RE = /^[A-Za-z0-9._-]{3,50}$/;
 // JWT secret: from env, else a random secret generated once and saved to .jwt_secret
 function loadJwtSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  const file = path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname, '.jwt_secret');
+  // A secret saved to a file is lost on every redeploy (the disk is wiped), which would sign everybody out
+  if (IS_PRODUCTION) throw new Error('JWT_SECRET is not set. In Railway: Service > Variables > add JWT_SECRET (a long random string). See RAILWAY.md.');
+  const file = path.join(__dirname, '.jwt_secret');
   try {
     return fs.readFileSync(file, 'utf8').trim();
   } catch (_) {
     const secret = crypto.randomBytes(48).toString('hex');
     fs.writeFileSync(file, secret, { mode: 0o600 });
-    console.log(`[AUTH] Generated a new JWT secret in ${file} (keep it private).`);
-    if (IS_PRODUCTION && !process.env.RAILWAY_VOLUME_MOUNT_PATH) {
-      console.warn('[AUTH] WARNING: JWT_SECRET is not set and there is no volume, so this secret disappears on every redeploy and everybody is signed out. Set JWT_SECRET in Railway > Variables (a long random string).');
-    }
+    console.log('[AUTH] Generated a new JWT secret in .jwt_secret (keep it private).');
     return secret;
   }
 }
@@ -130,7 +122,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   next();
 });
-app.get('/api/health', (req, res) => res.status(200).json({ app: 'scopedesk', ok: true, status: 'online' }));
+app.get('/api/health', (req, res) => res.status(200).json({ app: 'scopedesk', ok: true, status: 'online', build: BUILD }));
 // IMPORTANT: serve ONLY the /public folder (never the project root, which holds the database and secrets)
 // no-cache: the browser must re-check files on every load, so an old cached script.js can never run against a new server
 app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
@@ -1082,7 +1074,7 @@ app.use((err, req, res, next) => {
 });
 
 server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') console.error(`\n[START] Port ${PORT} is already in use. Close the other ScopeDesk window (or whatever uses it), or set PORT=3001 in .env and open http://localhost:3001\n`);
+  if (err.code === 'EADDRINUSE') console.error(`\n[START] Port ${PORT} is already in use. Something else is using it. Stop that program, or set a different PORT.\n`);
   else console.error('[START] Server failed to start:', err.message);
   process.exit(1);
 });
@@ -1091,8 +1083,10 @@ server.listen(PORT, HOST, () => {
   timers.restoreAll().then((n) => console.log(`[TIMER] Re-armed ${n} open task(s)`)).catch((e) => console.error('[TIMER]', e.message));
   console.log('====================================================');
   console.log(' ScopeDesk Secure Task-Bounded Remote Support Engine');
-  console.log(` Address:   ${APP_URL}${ON_RAILWAY ? '  (Railway)' : ''}`);
-  console.log(` Listening: ${HOST}:${PORT}`);
+  console.log(` Open:      ${APP_URL}`);
+  console.log(` Mode:      ${IS_PRODUCTION ? 'production' : 'development'}   Build: ${BUILD}`);
+  console.log(` Folder:    ${__dirname}`);
+  if (IS_PRODUCTION && !process.env.DB_PATH) console.warn(' WARNING:   DB_PATH is not set. Data is lost on every redeploy. Add a Railway Volume and set DB_PATH=/data/scopedesk.db (see RAILWAY.md).');
   console.log(` Realtime:  Socket.IO on the same port`);
   console.log(` Database:  ${db.driver}`);
   console.log('====================================================');
