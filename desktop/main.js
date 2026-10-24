@@ -12,17 +12,28 @@ const { app, BrowserWindow, ipcMain, session, desktopCapturer, shell, Notificati
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
 const { fork, spawn } = require('child_process');
 const { createAgentRunner } = require('./agent-runner');
 const { validateAgentConfig, isTrustedSender } = require('./validate');
+const { normalizeServerUrl } = require('../agent/server-url');
 
 const APP_DIR = path.join(__dirname, '..');
 const AGENT_DIR = path.join(APP_DIR.replace('app.asar', 'app.asar.unpacked'), 'agent'); // native modules cannot run from inside an asar
 const PORT = Number(process.env.PORT || 3000);
-// Point this at a hosted ScopeDesk server to use the app as a pure client (no local server is started then)
-const REMOTE_SERVER = process.env.SCOPEDESK_SERVER_URL || '';
-const SERVER_URL = (REMOTE_SERVER || `http://localhost:${PORT}`).replace(/\/+$/, '');
+// The app is a pure client of the live ScopeDesk server (Railway). Its address comes from, in this order:
+//   1) the SCOPEDESK_SERVER_URL environment variable   2) "serverUrl" in desktop/app-config.json (the normal place)
+// No server is started on this computer. For DEVELOPMENT ONLY, set SCOPEDESK_LOCAL_SERVER=1 to run a local one instead.
+function readAppConfig() { try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'app-config.json'), 'utf8')); } catch (_) { return {}; } }
+const LOCAL_DEV = process.env.SCOPEDESK_LOCAL_SERVER === '1';
+const CONFIGURED = (process.env.SCOPEDESK_SERVER_URL || readAppConfig().serverUrl || '').trim();
+const RESOLVED = CONFIGURED ? normalizeServerUrl(CONFIGURED) : null;
+const REMOTE_SERVER = RESOLVED && RESOLVED.ok ? RESOLVED.url : '';
+const CONFIG_ERROR = RESOLVED
+  ? (RESOLVED.ok ? '' : RESOLVED.error)
+  : (LOCAL_DEV ? '' : 'No server address is set. Put your live ScopeDesk address (https://your-app.up.railway.app) in desktop/app-config.json as "serverUrl", then start the app again.');
+const SERVER_URL = REMOTE_SERVER || `http://localhost:${PORT}`;
 const DATA_DIR = path.join(app.getPath('userData'), 'data');
 
 let win = null, serverChild = null, runner = null;
@@ -30,7 +41,8 @@ let win = null, serverChild = null, runner = null;
 // ---------- helpers ----------
 function healthy(url) {
   return new Promise((resolve) => {
-    const req = http.get(`${url}/api/health`, { timeout: 1500 }, (res) => {
+    const client = url.startsWith('https:') ? https : http;   // http.get() throws on an https address
+    const req = client.get(`${url}/api/health`, { timeout: url.startsWith('https:') ? 6000 : 1500 }, (res) => {
       let body = '';
       res.on('data', (d) => { body += d; });
       res.on('end', () => { try { resolve(JSON.parse(body).app === 'scopedesk'); } catch (_) { resolve(false); } });
@@ -82,8 +94,13 @@ async function waitHealthy(child, ms) {
 }
 
 async function ensureServer() {
-  if (await healthy(SERVER_URL)) return;                      // already running (yours, or a hosted one)
-  if (REMOTE_SERVER) throw new Error(`Cannot reach the ScopeDesk server at ${SERVER_URL}. Check your internet connection.`);
+  if (CONFIG_ERROR) throw new Error(CONFIG_ERROR);
+  if (REMOTE_SERVER) {
+    // The hosted server may be waking up or restarting after an update, so give it a little while
+    if (await waitHealthy(null, 25000)) return;
+    throw new Error(`Cannot reach the ScopeDesk server at ${SERVER_URL}. Check your internet connection. If it is fine, the server may be down: try again in a minute.`);
+  }
+  if (await healthy(SERVER_URL)) return;                      // development: already running
   fs.mkdirSync(DATA_DIR, { recursive: true });
   // 1) the runtime bundled inside the app; 2) if that cannot run the server (e.g. no node:sqlite), Node installed on this PC
   for (const useSystemNode of [false, true]) {

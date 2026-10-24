@@ -1,3 +1,4 @@
+// LOCAL DEVELOPMENT ONLY. On Railway, set the SMTP variables in Railway > Variables instead; this file is not used there.
 // One-time helper: asks for your Gmail address + App Password, saves them to .env, and sends a test email.
 // Run with:  npm run setup-email
 const fs = require('fs');

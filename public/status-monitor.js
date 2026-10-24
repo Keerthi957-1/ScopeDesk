@@ -22,8 +22,12 @@
   let beforeProbe = null;            // optional async hook: lets the page re-locate the server before each check
   let banner;
 
-  const isWindows = /Windows/i.test(navigator.userAgent);
-  const startHint = isWindows ? 'Double-click start-windows.bat in the ScopeDesk folder.' : 'Run start-mac-linux.command in the ScopeDesk folder.';
+  // The server is hosted (Railway); nothing is started on this computer, so the steps are about the connection and the host.
+  const hints = [
+    'Check that this computer is connected to the internet.',
+    'The server may be restarting after an update. That usually takes under a minute, and this page reconnects by itself.',
+    'If it does not come back, whoever runs ScopeDesk should check the deployment and its logs on Railway.'
+  ];
 
   function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; }
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -61,8 +65,7 @@
       text.append(el('p', 'srv-live', 'A live session is open: screen sharing and remote control are paused, and the session timer keeps running on the server.'));
     }
     const steps = el('ol', 'srv-steps');
-    [startHint, 'Or open a terminal in the ScopeDesk folder and run: npm start', 'Keep that window open while you use ScopeDesk.']
-      .forEach((t) => steps.append(el('li', '', t)));
+    hints.forEach((t) => steps.append(el('li', '', t)));
     text.append(steps);
 
     const side = el('div', 'srv-side');

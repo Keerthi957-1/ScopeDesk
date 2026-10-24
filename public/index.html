@@ -523,7 +523,10 @@
                 <p class="cmd-label">First time only, in the <code>agent</code> folder: <code>npm install</code></p>
                 <p class="cmd-label">Windows (Command Prompt)</p>
                 <pre class="cmd-box" id="cmdWindows"></pre>
-                <p class="cmd-label">Easiest: double-click <code>agent/start-agent-windows.bat</code> (or <code>start-agent-mac-linux.command</code>) and paste this token when asked</p>
+                <p class="cmd-label">Easiest: double-click <code>agent/start-agent-windows.bat</code> (or <code>start-agent-mac-linux.command</code>) and paste the server address and this token when asked</p>
+                <p class="cmd-label">Server address</p>
+                <pre class="cmd-box" id="cmdServer"></pre>
+                <p class="cmd-label">Token</p>
                 <pre class="cmd-box" id="cmdToken"></pre>
                 <p class="cmd-label">Mac / Linux</p>
                 <pre class="cmd-box" id="cmdUnix"></pre>
@@ -535,7 +538,8 @@
         </div>
     </div>
 
-    <script src="http://localhost:3000/socket.io/socket.io.js"></script>
+    <script src="config.js?v=1"></script>
+    <script src="/socket.io/socket.io.js"></script>
     <script src="status-monitor.js?v=1"></script>
     <script src="remote-input.js?v=1"></script>
     <script src="webrtc.js?v=3"></script>

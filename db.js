@@ -1,7 +1,16 @@
 const path = require('path');
 
 // Database: SQLite via Node's built-in `node:sqlite` (Node 22.13+). No external DB needed.
-const dbPath = process.env.DB_PATH || path.join(__dirname, 'scopedesk.db');
+// Where the data lives. On Railway the container's own disk is wiped on EVERY deploy and restart, so the database must be on a
+// Railway Volume. Attaching a volume is enough: Railway tells the app where it is mounted (RAILWAY_VOLUME_MOUNT_PATH).
+// Or point DB_PATH at any file you like.
+const hosted = process.env.NODE_ENV === 'production' || !!(process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
+const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
+const dbPath = process.env.DB_PATH || path.join(dataDir, 'scopedesk.db');
+if (hosted && !process.env.DB_PATH && !process.env.RAILWAY_VOLUME_MOUNT_PATH) {
+  console.warn('[DB] WARNING: no persistent storage. All accounts and tasks will be LOST on every redeploy or restart. In Railway: add a Volume to this service (mount path e.g. /data); the app will use it automatically.');
+}
+try { require('fs').mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (_) { /* opening the database will report a real problem */ }
 
 let sqliteDb;
 try {

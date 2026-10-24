@@ -3,19 +3,20 @@ document.addEventListener('submit', (e) => e.preventDefault(), true);
 
 document.addEventListener('DOMContentLoaded', () => {
 
-    // Where is the ScopeDesk backend?
-    //   1) same origin (page served by ScopeDesk itself, any port)
-    //   2) an address you saved:  localStorage.setItem('scopedesk_api', 'http://localhost:5000')
-    //   3) http://localhost:3000 (the server's default port)
-    // Every check has a timeout, so a dead port can never hang the login screen.
+    // Where is the ScopeDesk backend? (the live server on Railway; nothing runs on this computer)
+    //   1) same origin: the page was loaded from the ScopeDesk server itself (the normal case on Railway)
+    //   2) API_URL from config.js: the live server's address, for pages opened from anywhere else
+    //   3) an address saved for testing:  localStorage.setItem('scopedesk_api', 'https://...')
+    //   4) http://localhost:3000, ONLY when this page itself is open on this computer (development)
+    // Every check has a timeout, so a dead address can never hang the login screen.
     let API_BASE = null;
     let apiResolved = false;
-    const API_CANDIDATES = () => {
-        let saved = '';
-        try { saved = (localStorage.getItem('scopedesk_api') || '').replace(/\/+$/, ''); } catch (_) { /* storage blocked */ }
-        return ['', saved, 'http://localhost:3000']
-            .filter((v, i, a) => (v === '' || v) && a.indexOf(v) === i);
-    };
+    const trimSlash = (v) => String(v || '').trim().replace(/\/+$/, '');
+    const configuredApi = () => trimSlash(window.SCOPEDESK_CONFIG && window.SCOPEDESK_CONFIG.API_URL);
+    const savedApi = () => { try { return trimSlash(localStorage.getItem('scopedesk_api')); } catch (_) { return ''; } };
+    const pageIsOnThisComputer = () => ['localhost', '127.0.0.1', ''].includes(window.location.hostname);
+    const API_CANDIDATES = () => ['', configuredApi(), savedApi(), pageIsOnThisComputer() ? 'http://localhost:3000' : '']
+        .filter((v, i, a) => (v === '' || v) && a.indexOf(v) === i);
     async function isScopeDesk(base) {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 2500);
@@ -32,7 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (await isScopeDesk(base)) { API_BASE = base; apiResolved = true; return; }
         }
         // Not found (server down). Use a default so requests fail cleanly, and look again on the next call.
-        if (API_BASE === null) { try { API_BASE = (localStorage.getItem('scopedesk_api') || '').replace(/\/+$/, ''); } catch (_) { API_BASE = ''; } API_BASE = API_BASE || 'http://localhost:3000'; }
+        if (API_BASE === null) API_BASE = configuredApi() || savedApi() || (pageIsOnThisComputer() ? 'http://localhost:3000' : '');
     }
 
     // ================= STATE =================
@@ -127,7 +128,7 @@ document.addEventListener('DOMContentLoaded', () => {
             throw new Error('Session expired.');
         }
         if (!response.ok) {
-            throw new Error(data.error || `The server answered with status ${response.status} but not from ScopeDesk. Open http://localhost:3000 in your browser and make sure "npm start" is running.`);
+            throw new Error(data.error || `The server answered with status ${response.status} but not from ScopeDesk. Check the server address (API_URL in config.js) or try again in a minute.`);
         }
         return data;
     }
@@ -1194,7 +1195,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const { agentToken } = await api(`/api/tasks/${STATE.live.taskId}/agent-token`, { method: 'POST' });
             ScopeDeskRTC.setAgentToken(agentToken); // the page will also hand the vendor's data-channel input to the agent
             $('cmdToken').textContent = agentToken;
-            const origin = window.location.origin;
+            const origin = API_BASE || window.location.origin; // the live server's address
+            $('cmdServer').textContent = origin;
             agentCmd.win = `set SERVER_URL=${origin}&& set SCOPEDESK_AGENT_TOKEN=${agentToken}&& npm start`;
             agentCmd.unix = `SERVER_URL=${origin} SCOPEDESK_AGENT_TOKEN=${agentToken} npm start`;
             $('cmdWindows').textContent = agentCmd.win;

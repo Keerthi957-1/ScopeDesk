@@ -14,6 +14,7 @@ const cfg = require('./config');
 const { ForegroundMonitor } = require('./monitor');
 const { InputInjector } = require('./input-injector');
 const { startBridge } = require('./bridge');
+const { normalizeServerUrl } = require('./server-url');
 const { loadPolicy } = require('./policy');
 const { createPathProbe } = require('./path-probe');
 
@@ -26,6 +27,13 @@ if (!cfg.TOKEN) {
   log('error', 'No agent token. Click "Pair host agent" in the ScopeDesk dashboard and copy the command it shows.');
   process.exit(1);
 }
+
+const server = normalizeServerUrl(cfg.SERVER_URL);
+if (!server.ok) {
+  log('error', `${server.error} Set SERVER_URL to your live ScopeDesk address, for example https://your-app.up.railway.app`);
+  process.exit(1);
+}
+cfg.SERVER_URL = server.url;
 
 const socket = io(cfg.SERVER_URL, { auth: { token: cfg.TOKEN }, reconnectionDelayMax: 5000 });
 let monitor = null, injector = null, bridge = null, taskId = null, expiryTimer = null, started = false;

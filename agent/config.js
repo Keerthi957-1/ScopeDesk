@@ -3,7 +3,8 @@
 //
 //   SCOPEDESK_AGENT_TOKEN  required. Copy it from the Client dashboard ("Pair host agent"). Valid for ONE task only and
 //                          expires when the task window ends.
-//   SERVER_URL             default http://localhost:3000
+//   SERVER_URL             REQUIRED: the live ScopeDesk server, e.g. https://your-app.up.railway.app (https only; http is accepted
+//                          only for a server on this same computer). The desktop app sets this for you.
 //   POLL_MS                foreground check interval, default 400
 //   STRIKES                consecutive bad polls before reporting, default 2 (filters Alt+Tab flicker)
 //   ATTRIBUTION_MS         a foreground change is blamed on the vendor only if vendor input was applied this recently, default 2500
@@ -16,7 +17,7 @@
 const normalize = (name) => String(name || '').normalize('NFKC').trim().toLowerCase().replace(/\.(exe|app)$/i, '').replace(/\s+/g, '').trim();
 
 module.exports = {
-  SERVER_URL: process.env.SERVER_URL || 'http://localhost:3000',
+  SERVER_URL: process.env.SERVER_URL || '',
   TOKEN: process.env.SCOPEDESK_AGENT_TOKEN || (process.argv.find((a) => a.startsWith('--token=')) || '').slice(8),
   POLL_MS: Number(process.env.POLL_MS || 400),
   STRIKES: Number(process.env.STRIKES || 2),
