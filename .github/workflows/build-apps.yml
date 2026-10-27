@@ -1,0 +1,77 @@
+name: Build desktop apps
+
+# Runs on every `git push origin main` (and can be started by hand from the Actions tab).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push cancels a build that is still running for the same branch.
+concurrency:
+  group: build-apps-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false            # a Windows failure must not hide the Mac result, and the other way round
+      matrix:
+        include:
+          - name: macOS (.dmg)
+            os: macos-latest
+            artifact: ScopeDesk-macOS
+            file: ScopeDesk.dmg
+          - name: Windows (.exe)
+            os: windows-latest
+            artifact: ScopeDesk-Windows
+            file: ScopeDesk Setup.exe
+
+    defaults:
+      run:
+        shell: bash               # same quoting rules on Windows and macOS
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22        # the app needs Node 22.13 or newer
+
+      # The background host agent (agent/) ships inside the app: install its production dependencies first.
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: |
+          npm install --no-audit --no-fund
+          npm run prepare:agent
+
+      - name: Package for macOS
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"   # no Apple signing certificate on the runner: build an unsigned app
+        run: npx electron-builder --mac dmg --publish never "-c.mac.artifactName=ScopeDesk.dmg"
+
+      - name: Package for Windows
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        run: npx electron-builder --win nsis --publish never "-c.nsis.artifactName=ScopeDesk Setup.exe"
+
+      - name: List the build output
+        working-directory: desktop
+        run: ls -la dist
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: desktop/dist/${{ matrix.file }}
+          if-no-files-found: error
+          retention-days: 30
