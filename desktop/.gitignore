@@ -1,0 +1,14 @@
+node_modules/
+.env
+mail-settings.json
+scopedesk.db
+scopedesk.db-*
+*.tmp
+   desktop/dist/
+   desktop/node_modules/
+   dist/
+desktop/dist/
+desktop/dist/
+.jwt_secret
+agent/node_modules/
+.kombai/

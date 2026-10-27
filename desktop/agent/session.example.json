@@ -1,0 +1,6 @@
+{
+  "taskId": 14,
+  "scope": "Fix Billing Software Invoice PDF Export Engine Error",
+  "allowedProcesses": ["explorer.exe", "calc.exe", "notepad.exe"],
+  "allowedDirectories": ["C:\\BillingData", "C:\\Program Files\\BillingEngine"]
+}

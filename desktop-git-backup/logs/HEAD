@@ -1,0 +1,3 @@
+0000000000000000000000000000000000000000 43e658ce85e7fa64be6239418b65d8b760603481 Keerthi <keerthibhat92007@gmail.com> 1793113770 +0530	commit (initial): Fix desktop launchers skipping incomplete agent installs
+43e658ce85e7fa64be6239418b65d8b760603481 18240a032678e477ab64955ffecac698df9e3585 Keerthi <keerthibhat92007@gmail.com> 1793113931 +0530	commit (merge): Fix screen share "media" permission and verify agent deps at build
+18240a032678e477ab64955ffecac698df9e3585 ba314e347ea7573fa9c04e3ceeb92e0e35e4054d Keerthi <keerthibhat92007@gmail.com> 1793114280 +0530	commit: Fix desktop launchers skipping incomplete agent installs
