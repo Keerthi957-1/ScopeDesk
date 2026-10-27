@@ -32,6 +32,7 @@
     "executableName": "ScopeDesk",
     "copyright": "ScopeDesk Team",
     "asar": true,
+    "afterPack": "after-pack.js",
     "npmRebuild": true,
     "directories": {
       "output": "dist"
