@@ -12,7 +12,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test \"test/*.test.js\"",
-    "prepare:agent": "npm --prefix ../agent install --omit=dev --no-audit --no-fund && node verify-agent.js",
+    "prepare:agent": "cd ../agent && npm install --omit=dev --no-audit --no-fund && cd ../desktop && node verify-agent.js",
     "rebuild:agent": "electron-rebuild --module-dir ../agent --force",
     "build": "npm run prepare:agent && electron-builder --publish never",
     "build:win": "npm run prepare:agent && electron-builder --win portable --publish never",
@@ -53,6 +53,9 @@
         "filter": [
           "**/*",
           "node_modules/**/*",
+          "!dist/**",
+          "!node_modules/scopedesk-desktop",
+          "!node_modules/scopedesk-desktop/**",
           "!test/**",
           "!tools/**",
           "!start-agent-*",
