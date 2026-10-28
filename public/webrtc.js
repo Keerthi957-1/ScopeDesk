@@ -111,6 +111,11 @@
     } catch (_) { return false; }               // the on-page alert and lock screen still show
   }
 
+  // Friendly in-window notice for the Client (public/screen-share.js). Never throws, ignores duplicate signals for one ending.
+  function showClosedNotice(info) {
+    try { if (isClientFn() && window.ScopeDeskScreenShare && window.ScopeDeskScreenShare.showSessionClosed) window.ScopeDeskScreenShare.showSessionClosed(info); } catch (_) { /* the notice is a nicety */ }
+  }
+
   // ---------- desktop app wiring (Client side) ----------
   if (desktop) {
     const track = (s) => {
@@ -145,12 +150,20 @@
       if (taskId && d.taskId === taskId) {
         const wasHost = role === 'host';
         stop(d.reason === 'security_violation' ? 'violation' : 'closed');
-        if (wasHost) notifyTerminated({ reason: d.reason, taskId: d.taskId });
+        if (wasHost) {
+          notifyTerminated({ reason: d.reason, taskId: d.taskId });
+          showClosedNotice({ reason: d.reason, taskId: d.taskId });
+        }
       }
     });
     s.on('agent-status', (d) => { if (d.taskId === taskId) set({ agent: d.online ? 'waiting' : 'offline' }); });
     s.on('agent-state', (d) => { if (d.taskId === taskId) set({ agent: d.state, policy: d.policy || view.policy }); });
-    s.on('control-halt', (d) => { if (d.taskId === taskId) { if (d.reason === 'violation') { frozen = true; closeChannels(); notifyTerminated({ reason: 'security_violation', taskId: d.taskId }); } set({ halted: d.reason, locked: !!d.permanent }); } });
+    s.on('control-halt', (d) => {
+      if (d.taskId !== taskId) return;
+      if (d.reason === 'violation') { frozen = true; closeChannels(); notifyTerminated({ reason: 'security_violation', taskId: d.taskId }); }
+      if (d.reason === 'ended' && role === 'host') { closeChannels(); showClosedNotice({ reason: d.endReason || 'closed', taskId: d.taskId }); }
+      set({ halted: d.reason, locked: !!d.permanent });
+    });
     s.on('control-resume', (d) => { if (d.taskId === taskId) { frozen = false; set({ halted: null, locked: false }); } });
     // After a dropped connection the server forgot our room membership: join again
     s.on('connect', () => { if (role && taskId) join().catch(() => {}); });
@@ -368,7 +381,7 @@
       const r = await sharer.start();
       if (!r.ok) {
         let tip = r.tip || r.message || 'Screen sharing did not start.';
-        if (desktop && typeof desktop.getDisplayMediaDenial === 'function' && (r.code === 'cancelled' || r.code === 'no-source')) {
+        if (desktop && typeof desktop.getDisplayMediaDenial === 'function' && r.code !== 'insecure' && r.code !== 'unsupported') {
           try { const why = await desktop.getDisplayMediaDenial(); if (why) tip += ` (ScopeDesk app detail: ${why})`; } catch (_) { /* optional detail */ }
         }
         if (r.retryable) {
@@ -462,7 +475,8 @@
 
   function stop(reason) {
     closePeer();
-    if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+    if (stream) { try { stream.getTracks().forEach((t) => t.stop()); } catch (_) { /* already stopped */ } stream = null; }
+    try { if (window.ScopeDeskScreenShare && window.ScopeDeskScreenShare.stopAll) window.ScopeDeskScreenShare.stopAll(); } catch (_) { /* nothing else to stop */ }
     if (video) video.srcObject = null;
     if (detachInput) { detachInput(); detachInput = null; }
     if (socket && taskId && role) socket.emit('webrtc-leave', { taskId });

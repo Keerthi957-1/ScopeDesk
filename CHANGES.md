@@ -193,3 +193,27 @@ Linux: `loginctl lock-session`) and reports to the server, which ends the task a
 Tested: the rating trigger (real SQLite), form/task validation, the sandbox guard (Windows and POSIX path rules, symlinks, traversal, lockdown order),
 and the new UI in headless Chrome with the missing front-end scripts stubbed. **Not tested:** booting `server.js` (express, socket.io and your
 `server/*` modules were not available) and a real WebRTC session; syntax-checked and reviewed only.
+
+## UPDATE 9: session enforcement and screen-share fix
+
+- Screen share "ScopeDesk app detail: error: undefined": `desktop/display-media-handler.js` printed `err.message` for errors that are not
+  Error objects. Every thrown value is now described, `getSources` is retried (3 attempts, different thumbnail sizes), and when the
+  capturer itself keeps failing the primary display is offered directly.
+- In the desktop app the share dialog no longer tells the Client to "click the picture of your screen" (there is no picker there).
+- `server/remote-control.js`: new `teardown(taskId, reason)` (halt, cancel countdown, drop host-agent sockets, release memory) used by
+  `terminateTask`; the countdown is also armed from the database when the host agent says hello or a peer joins the stream
+  (`session-timers.js` `ensure()`); a vendor "open folder" request outside the approved paths is checked on the SERVER
+  (`task-scope.js` `checkPathScope`) and ends the session as a breach before it reaches the Client's PC.
+- `server.js`: breach handling shared by host-agent reports and the server-side check (`enforceBreach`).
+- `public/screen-share.js`: `stopAll()` stops every capture, `showSessionClosed()` shows a friendly notice at the top of the window;
+  wired to `session-ended`, `webrtc-close` and `control-halt` (`script.js`, `webrtc.js`). Cache-busting query strings bumped.
+- Tests: `test/session-enforcement.test.js`, extra cases in `test/screen-share.test.js`.
+
+## UPDATE 10: cross-network relay and diagnostics
+
+- `server/rtc-config.js` now matches its tests and RAILWAY.md: Cloudflare Realtime TURN (per-session credentials that expire with the task),
+  Metered TURN, your own coturn/fixed account, `TURN_FORCE_RELAY`. Failures are logged once without keys and fall through to the next option.
+  There is deliberately no built-in "public" relay: the shared open-relay servers are gone or parked.
+- Desktop app: Help > Save diagnostics report writes ScopeDesk-diagnostics.txt on the Desktop (agent files/modules present, agent state,
+  last log lines, last screen-share refusal; tokens and keys removed). `diagnostics.js` is in the installer's file list and a test now
+  fails the build if any file main.js requires is missing from that list.

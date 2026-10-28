@@ -47,7 +47,7 @@ A custom domain works the same way: put it in `serverUrl`.
 - Keep ONE Railway project/service for ScopeDesk. Extra copies each build separately and only add confusion (and cost).
 
 ## Relay (TURN): required when the two people are on different networks
-Out of the box the server now adds a shared public relay as a best-effort fallback (`/api/health` still shows `"relay":false` until you add your own). It is fine for testing; for production use Cloudflare or Metered below, because shared relays are rate limited and can stop working without notice. Set `PUBLIC_TURN_FALLBACK=false` to disable it.
+There is no built-in free relay: the shared "open relay" servers that used to exist are gone or parked, so without your own relay the app only works when the two computers can reach each other directly (often not the case across different networks or on mobile data). The Vendor then sees "Cannot connect across networks".
 Symptom without it: the Vendor window stays on "Connecting..." and the Client sees "connection lost, retrying". Open `https://your-address/api/health`: if it shows `"relay":false`, this step is missing.
 1. Create a free Cloudflare account, open **Realtime > TURN Server** and create a TURN key. Copy the **Turn Token ID** and the **API Token**.
 2. In Railway > Variables add `CLOUDFLARE_TURN_KEY_ID` (the Token ID) and `CLOUDFLARE_TURN_API_TOKEN` (the API Token). Railway redeploys by itself.
@@ -55,7 +55,7 @@ Symptom without it: the Vendor window stays on "Connecting..." and the Client se
 
 **No Cloudflare? Use Metered (free account) instead.** Sign up at metered.ca, create an app, and open its TURN Server page. Add the Railway variables `METERED_APP` (your app name, the part before `.metered.live`) and `METERED_API_KEY`. Check `/api/health` shows `"relay":true`.
 Cloudflare is the better choice (larger free allowance, and its credentials expire exactly when the task ends), but both work.
-Do not paste shared "open" usernames/passwords from the internet into the code: they stop working without warning and cannot expire with a task. Your own coturn server or another provider also works: see `.env.example`.
+Do not paste shared "open" usernames/passwords from the internet into the code: they stop working without warning and cannot expire with a task. Your own coturn server or another provider also works: see `.env.example`. `TURN_FORCE_RELAY=true` sends all traffic through the relay (slower, but hides both IP addresses).
 
 ## Why `npm run build` on Railway is only an `echo`
 Railway runs the root `build` script. It must never touch `desktop/` (Electron, electron-builder, native modules), which cannot be compiled in a headless container. The root `build` script and `nixpacks.toml` skip it; installers are built on a PC with `npm run desktop:build` (or `cd desktop && npm run dist`).

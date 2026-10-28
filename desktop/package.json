@@ -42,6 +42,7 @@
       "preload.js",
       "agent-runner.js",
       "display-media-handler.js",
+      "diagnostics.js",
       "validate.js",
       "config.js",
       "splash.html",

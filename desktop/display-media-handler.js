@@ -34,6 +34,54 @@ function originOf(url) {
   }
 }
 
+/**
+ * Turns anything that can be thrown into readable text. Electron/Chromium sometimes reject with a plain string, an
+ * object without .message, or nothing at all; "error: " + err.message then printed "error: undefined".
+ */
+function describeError(err) {
+  if (err == null) return 'unknown error (no details were provided)';
+  if (typeof err === 'string') return err.slice(0, 160) || 'unknown error';
+  if (typeof err.message === 'string' && err.message) return err.message.slice(0, 160);
+  try {
+    const j = JSON.stringify(err);
+    if (j && j !== '{}') return j.slice(0, 160);
+  } catch (_) { /* circular or unserialisable */ }
+  const name = err.name || (err.constructor && err.constructor.name);
+  return name && name !== 'Object' ? String(name) : 'unknown error';
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Asks Electron for the screens. The first attempt can fail right after the app starts or while Windows is switching
+ * displays, so it tries a few times with different thumbnail sizes before giving up. Never throws: returns { sources, error }.
+ */
+async function getScreenSources(desktopCapturer, log = () => {}, pauseMs = 150) {
+  const sizes = [{ width: 0, height: 0 }, { width: 1, height: 1 }, { width: 150, height: 150 }];
+  let lastError = null;
+  let threw = false;
+  for (let i = 0; i < sizes.length; i += 1) {
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: sizes[i], fetchWindowIcons: false });
+      if (sources && sources.length) return { sources, error: null };
+      lastError = 'no screens were reported';
+      threw = false;
+    } catch (err) {
+      threw = true;
+      lastError = describeError(err);
+      log('[display-media] getSources attempt ' + (i + 1) + ' failed: ' + lastError);
+    }
+    if (i < sizes.length - 1 && pauseMs > 0) await wait(pauseMs);
+  }
+  return { sources: [], error: lastError, threw };
+}
+
+/** Last resort when the capturer cannot list screens: Chromium accepts the primary display by its id. */
+function fallbackSource(primaryDisplayId) {
+  if (primaryDisplayId === null || primaryDisplayId === undefined) return null;
+  return { id: 'screen:' + primaryDisplayId + ':0', name: 'Entire screen', display_id: String(primaryDisplayId) };
+}
+
 /** Picks the primary display's source, else the first screen source. Returns null when there is none. */
 function pickScreenSource(sources, primaryDisplayId) {
   const screens = (sources || []).filter((s) => s && typeof s.id === 'string' && s.id.startsWith('screen:'));
@@ -46,29 +94,33 @@ function pickScreenSource(sources, primaryDisplayId) {
  * Builds the request handler (exported separately so it can be tested without Electron).
  * @returns {(request:object, callback:Function) => Promise<void>}
  */
-function createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrigins = [], log = () => {}, onDeny = () => {}, requireGesture = false }) {
+function createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrigins = [], log = () => {}, onDeny = () => {}, requireGesture = false, retryPauseMs = 150 }) {
   const allowed = new Set(['file://', ...allowedOrigins.map((o) => originOf(o) || o)]);
   return async function handler(request, callback) {
     const deny = (why) => {
       log('[display-media] denied: ' + why);
       try { onDeny(why); } catch (_) { /* reporting only */ }
-      try { callback({}); } catch (err) { log('[display-media] callback failed: ' + err.message); }
+      try { callback({}); } catch (err) { log('[display-media] callback failed: ' + describeError(err)); }
     };
     try {
       // Chromium already refuses getDisplayMedia without a fresh click, so a missing flag here is not a reason to deny by default.
       if (requireGesture && (!request || request.userGesture !== true)) return deny('no user gesture');
-      const origin = originOf(request.securityOrigin || (request.frame && request.frame.url) || '');
+      const origin = originOf((request && (request.securityOrigin || (request.frame && request.frame.url))) || '');
       if (!allowed.has(origin)) return deny('origin not allowed: ' + (origin || 'unknown'));
 
-      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
       let primaryId = null;
       try { primaryId = screen.getPrimaryDisplay().id; } catch (_) { /* fall back to the first screen */ }
-      const source = pickScreenSource(sources, primaryId);
-      if (!source) return deny('no screen source (on macOS check System Settings > Privacy & Security > Screen Recording)');
+      const found = await getScreenSources(desktopCapturer, log, retryPauseMs);
+      let source = pickScreenSource(found.sources, primaryId);
+      if (!source && found.threw) {            // the capturer itself failed (not "there is no screen"): offer the primary display directly
+        source = fallbackSource(primaryId);
+        if (source) log('[display-media] using the primary display directly (' + (found.error || 'no source') + ')');
+      }
+      if (!source) return deny('no screen source: ' + (found.error || 'none found') + ' (on macOS check System Settings > Privacy & Security > Screen Recording)');
 
       callback({ video: source });                       // video only: audio is never shared
     } catch (err) {
-      deny('error: ' + err.message);
+      deny('error: ' + describeError(err));
     }
   };
 }
@@ -83,4 +135,4 @@ function installDisplayMediaHandler({ session, desktopCapturer, screen, allowedO
   return true;
 }
 
-module.exports = { installDisplayMediaHandler, createDisplayMediaRequestHandler, pickScreenSource, originOf };
+module.exports = { installDisplayMediaHandler, createDisplayMediaRequestHandler, pickScreenSource, originOf, describeError, getScreenSources, fallbackSource };

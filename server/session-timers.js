@@ -35,5 +35,19 @@ module.exports = function createSessionTimers({ db, parseDbDate, onExpire }) {
     return rows.length;
   }
 
-  return { schedule, cancel, restoreAll };
+  const has = (taskId) => timers.has(taskId);
+
+  // Arms the countdown for a task from the database if nothing is running for it yet. Called whenever a connection forms
+  // (host agent hello, vendor joining the stream) so a restart or a missed accept can never leave a session without a limit.
+  async function ensure(taskId) {
+    if (timers.has(taskId)) return true;
+    const row = await db.get("SELECT window_end, status FROM tasks WHERE id = ?", [taskId]);
+    if (!row || !['pending', 'active'].includes(row.status)) return false;
+    const end = parseDbDate(row.window_end).getTime();
+    if (!Number.isFinite(end)) return false;
+    schedule(taskId, end);
+    return true;
+  }
+
+  return { schedule, cancel, restoreAll, has, ensure };
 };

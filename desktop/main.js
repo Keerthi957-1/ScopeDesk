@@ -9,7 +9,7 @@
 //   * the window title and a system notification say when remote control is active, and the page has a Stop button
 //   * only the ScopeDesk page itself can call the agent IPC channels, and it can only send {taskId, token}
 //   * the agent still enforces the task's allowed apps/folders and the time window (agent/policy.js, monitor.js)
-const { app, BrowserWindow, ipcMain, session, desktopCapturer, shell, Notification, net } = require('electron');
+const { app, BrowserWindow, ipcMain, session, desktopCapturer, shell, Notification, net, Menu, dialog } = require('electron');
 app.setAppUserModelId('com.scopedesk.desktop');   // Windows needs this for native notifications to appear
 const path = require('path');
 const fs = require('fs');
@@ -17,6 +17,7 @@ const { createAgentRunner } = require('./agent-runner');
 const { validateAgentConfig, isTrustedSender } = require('./validate');
 const { resolveServerUrl } = require('./config');
 const { installDisplayMediaHandler } = require('./display-media-handler');
+const { buildReport } = require('./diagnostics');
 
 // The server lives on Railway; nothing is started on this computer except the host agent, and only during a session.
 const AGENT_DIR = app.isPackaged ? path.join(process.resourcesPath, 'agent') : path.join(__dirname, '..', 'agent');
@@ -167,6 +168,36 @@ function setupAgentIpc() {
   ipcMain.handle('display-media:last-denial', (event) => (trusted(event) ? lastDisplayDenial : ''));
 }
 
+// ---------- Help > Save diagnostics report ----------
+// One click gives the Client a text file (no passwords or tokens) that shows whether the host agent and its modules are installed,
+// its current state and its last log lines. Send that file to whoever supports ScopeDesk.
+function saveDiagnostics() {
+  try {
+    const canResolve = (m) => { try { require.resolve(m, { paths: [AGENT_DIR] }); return true; } catch (_) { return false; } };
+    const text = buildReport({
+      appVersion: app.getVersion(), versions: process.versions, platform: process.platform, arch: process.arch, packaged: app.isPackaged,
+      serverUrl: SERVER_URL, agentDir: AGENT_DIR, exists: (p) => fs.existsSync(p), canResolve,
+      agentStatus: runner ? runner.status() : {}, agentLogs: runner ? runner.logs() : [], lastDisplayDenial
+    });
+    const file = path.join(app.getPath('desktop'), 'ScopeDesk-diagnostics.txt');
+    fs.writeFileSync(file, text, 'utf8');
+    shell.showItemInFolder(file);
+    dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, { type: 'info', title: 'ScopeDesk', message: 'Diagnostics report saved', detail: file + '\n\nIt contains no passwords or tokens. Send this file to your ScopeDesk support contact.' });
+  } catch (err) {
+    dialog.showErrorBox('ScopeDesk', 'Could not save the report: ' + String((err && err.message) || err));
+  }
+}
+
+function installMenu() {
+  const isMac = process.platform === 'darwin';
+  const template = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+    { label: 'Help', submenu: [{ label: 'Save diagnostics report', click: saveDiagnostics }] }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 // ---------- lifecycle ----------
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -175,6 +206,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     configureSession();
     setupAgentIpc();
+    installMenu();
     createWindow();
     runner.warm();   // the same instant the window opens: the hidden background agent is already running, waiting for a ticket
     if (target.error) return showError(target.error);

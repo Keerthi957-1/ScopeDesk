@@ -257,8 +257,8 @@ async function terminateTask(taskId, { reason, message, actorId, finalStatus = '
   for (const vendorId of await getVendorUserIds(taskId)) emitToUser(vendorId, 'force-terminate', payload);
   emitToUser(task.client_id, 'session-ended', payload);
   timers.cancel(taskId);
-  remoteControl.halt(taskId, 'ended');
-  cutStream(taskId, reason, message);
+  remoteControl.teardown(taskId, reason);   // input stops, host agent sockets drop, per-task memory is released
+  cutStream(taskId, reason, message);        // both browsers close their WebRTC connection; the stream room is emptied
   return { ok: true, task };
 }
 
@@ -316,7 +316,7 @@ const timers = createSessionTimers({
     actorId: null, finalStatus: 'expired', sessionStatus: 'expired'
   })
 });
-const remoteControl = createRemoteControl({ io, db, authorizeRtc, emitToTask, verifyToken });
+const remoteControl = createRemoteControl({ io, db, authorizeRtc, emitToTask, verifyToken, timers, onBreach: (b) => handleVendorBreach(b) });
 
 // Set AUTO_CUT_STREAM=false in .env to keep the stream alive until the Client presses "Terminate Session Now".
 // Default: a violation locks the vendor out for good and the Client can only terminate. Set ALLOW_RESUME_AFTER_VIOLATION=true to let the Client resume.
@@ -338,11 +338,20 @@ async function handleHostViolation(user, payload, socket) {
     ORDER BY rs.id DESC LIMIT 1
   `, [taskId, user.userId]);
   if (!session) return { ok: false, error: 'No active session for this task.' };
-  const alertsOn = session.alerts_enabled !== 0;
+  return enforceBreach(session, taskId, {
+    processName: payload && payload.processName,
+    kind: payload && payload.kind,
+    detail: payload && payload.detail,
+    actorId: user.userId
+  });
+}
 
-  const processName = String((payload && payload.processName) || 'unknown').replace(/[^\w .\-\\/()+]/g, '').slice(0, 255) || 'unknown';
-  const kind = payload && payload.kind === 'path' ? 'path' : 'app';
-  const detail = String((payload && payload.detail) || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 300); // shown as text only, never as HTML
+// Shared by every breach source (host agent report, server-side scope check): record it, halt input, end the task, alert the Client.
+async function enforceBreach(session, taskId, info) {
+  const alertsOn = session.alerts_enabled !== 0;
+  const processName = String(info.processName || 'unknown').replace(/[^\w .\-\\/()+]/g, '').slice(0, 255) || 'unknown';
+  const kind = info.kind === 'path' ? 'path' : 'app';
+  const detail = String(info.detail || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 300); // shown as text only, never as HTML
   const what = kind === 'path'
     ? `${processName} opened a folder outside the approved paths${detail ? ': ' + detail : ''}`
     : `${processName} was brought to the front but is not approved for this task`;
@@ -359,7 +368,7 @@ async function handleHostViolation(user, payload, socket) {
   let terminated = false;
   if (!ALLOW_RESUME) {
     // Breach protocol: the task ends NOW (vendor gets force-terminate, both peers get webrtc-close, timers are cancelled).
-    const ended = await terminateTask(taskId, { reason: 'security_violation', message: `Security violation: ${what}.`, actorId: user.userId });
+    const ended = await terminateTask(taskId, { reason: 'security_violation', message: `Security violation: ${what}.`, actorId: info.actorId });
     terminated = !!ended.ok;
   } else if (AUTO_CUT_STREAM) {
     cutStream(taskId, 'security_violation', `Security violation: ${what}.`);
@@ -374,8 +383,20 @@ async function handleHostViolation(user, payload, socket) {
       : emitToUser(session.client_id, 'violation-alert', { ...common, message: 'Vendor accessed unauthorized data!', canResume: ALLOW_RESUME });
     if (delivered > 0) await db.run("UPDATE intrusion_events SET action_taken = 'client_notified' WHERE id = ?", [eventId]);
   }
-  await logAudit(user.userId, 'HOST_VIOLATION_REPORTED', { taskId, processName, kind, detail, terminated, alertsOn, alertDelivered: delivered > 0 });
+  await logAudit(info.actorId, 'HOST_VIOLATION_REPORTED', { taskId, processName, kind, detail, terminated, alertsOn, alertDelivered: delivered > 0 });
   return { ok: true, terminated, streamCut: terminated || AUTO_CUT_STREAM, alertDelivered: delivered > 0 };
+}
+
+// The server itself caught the Vendor asking for a folder outside the approved paths (see remote-control.js).
+async function handleVendorBreach({ taskId, user, kind, processName, detail }) {
+  const session = await db.get(`
+    SELECT rs.id, rs.client_id, rs.vendor_name, t.title, t.alerts_enabled
+    FROM remote_sessions rs JOIN tasks t ON t.id = rs.task_id
+    WHERE rs.task_id = ? AND rs.vendor_id = ? AND rs.status = 'active' AND t.status = 'active'
+    ORDER BY rs.id DESC LIMIT 1
+  `, [taskId, user.userId]);
+  if (!session) return { ok: false, error: 'No active session for this task.' };
+  return enforceBreach(session, taskId, { processName, kind, detail, actorId: user.userId });
 }
 
 // Violations are reported ONLY by the host agent on the Client's PC (handleHostViolation above).
@@ -448,6 +469,7 @@ io.on('connection', (socket) => {
       if (role === 'vendor' && !ALLOW_RESUME && remoteControl.isHalted(taskId)) return respond(ack, { ok: false, error: 'Your access to this session was revoked after a security violation.' });
       const room = rtcRoom(taskId);
       const peers = [...(await io.in(room).fetchSockets())].filter((s) => s.id !== socket.id).map((s) => s.data.user.role);
+      await timers.ensure(taskId).catch((e) => console.error('[TIMER] ensure failed:', e.message));   // a connection is forming: the countdown must be running
       socket.join(room);
       socket.data.rtc.add(taskId);
       socket.to(room).emit('webrtc-peer-joined', { role });

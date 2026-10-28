@@ -115,11 +115,53 @@ test('display-media handler: primary screen offered only for a user gesture from
   assert.deepEqual(await run(make(), { userGesture: true, securityOrigin: 'https://evil.example/' }), {});
   const none = make({ desktopCapturer: { getSources: async () => [{ id: 'window:1:0' }] } });
   assert.deepEqual(await run(none, { userGesture: true, securityOrigin: 'file:///x' }), {});
-  const boom = make({ desktopCapturer: { getSources: async () => { throw new Error('x'); } } });
-  assert.deepEqual(await run(boom, { userGesture: true, securityOrigin: 'file:///x' }), {});
+  const boom = make({ retryPauseMs: 0, desktopCapturer: { getSources: async () => { throw new Error('x'); } } });
+  assert.equal((await run(boom, { userGesture: true, securityOrigin: 'file:///x' })).video.id, 'screen:1:0');   // capturer failed: primary display offered directly
+  const boomNoScreen = make({ retryPauseMs: 0, screen: { getPrimaryDisplay: () => { throw new Error('no display'); } }, desktopCapturer: { getSources: async () => { throw new Error('x'); } } });
+  assert.deepEqual(await run(boomNoScreen, { userGesture: true, securityOrigin: 'file:///x' }), {});   // nothing to offer: denied
   const reasons = []; const lenient = make({ requireGesture: false, onDeny: (w) => reasons.push(w) });
   assert.equal((await run(lenient, { securityOrigin: 'file:///x' })).video.id, 'screen:1:0');   // gesture flag not required by default
   await run(lenient, { securityOrigin: 'https://evil.example/' });
   assert.match(reasons[0], /origin not allowed/);
   assert.equal(pickScreenSource([], 1), null); assert.equal(originOf('nonsense'), '');
+});
+
+test('display-media handler: any thrown value is described, never "undefined"', async () => {
+  const { describeError } = require('../desktop/display-media-handler');
+  assert.equal(describeError('Failed to get sources.'), 'Failed to get sources.');
+  assert.equal(describeError(undefined), 'unknown error (no details were provided)');
+  assert.equal(describeError({ code: 5 }), '{"code":5}');
+  assert.equal(describeError(new Error('boom')), 'boom');
+  const reasons = [];
+  const h = createDisplayMediaRequestHandler({
+    desktopCapturer: { getSources: async () => [{ id: 'screen:1:0', display_id: '1' }] },
+    screen: { getPrimaryDisplay: () => ({ id: 1 }) }, onDeny: (w) => reasons.push(w)
+  });
+  await h({ securityOrigin: 'file:///x' }, () => { throw undefined; });   // callback itself rejects with a non-Error
+  assert.ok(reasons.every((r) => !/undefined/.test(r)));
+});
+
+test('display-media handler: a flaky first getSources is retried', async () => {
+  let calls = 0;
+  const h = createDisplayMediaRequestHandler({
+    retryPauseMs: 0, screen: { getPrimaryDisplay: () => ({ id: 1 }) },
+    desktopCapturer: { getSources: async () => { calls += 1; if (calls < 3) throw 'Failed to get sources.'; return [{ id: 'screen:1:0', display_id: '1' }]; } }
+  });
+  let out; await h({ securityOrigin: 'file:///x' }, (v) => { out = v; });
+  assert.equal(calls, 3); assert.equal(out.video.id, 'screen:1:0');
+});
+
+test('session closed notice: wording per reason, stopAll stops every captured track, no DOM = no crash', () => {
+  assert.match(SS.describeEnd({ reason: 'time_expired' }).title, /ended/i);
+  assert.equal(SS.describeEnd({ reason: 'security_violation' }).tone, 'warn');
+  assert.match(SS.describeEnd({ reason: 'something_new' }).body, /switched off/i);
+  assert.equal(SS.describeEnd({ title: 'x'.repeat(200) }).task.length, 80);
+  SS.stopAll();                                   // the registry is shared by every test in this file
+  const good = fakeStream('monitor');
+  const share = SS.create({ mediaDevices: devices(good) });
+  return share.start().then(() => {
+    const r = SS.showSessionClosed({ reason: 'time_expired', taskId: 1 });   // Node has no document
+    assert.equal(r.shown, false); assert.equal(r.stopped, 1); assert.equal(good.track.stopped, true);
+    assert.equal(SS.stopAll(), 0);
+  });
 });

@@ -6,7 +6,10 @@
 // can enforce the rules on EVERY event: task still active, vendor owns the session, not halted, rate-limited.
 // When time runs out or a violation is flagged, halt() stops the flow instantly.
 
+const { checkPathScope, readList } = require('./task-scope');
+
 const MAX_EVENTS_PER_SEC = 400;
+const ENDED_MARK_MS = 10 * 60 * 1000;   // how long a finished task is remembered as 'ended' before its memory is released
 const AUTH_CACHE_MS = 2000;
 
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
@@ -44,7 +47,7 @@ function parseInput(e) {
 
 const parseList = (s) => { try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch (_) { return []; } };
 
-module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask, verifyToken }) {
+module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask, verifyToken, timers, onBreach }) {
   const agents = new Map(); // taskId -> Set<socketId>
   const halted = new Map(); // taskId -> 'violation' | 'ended'
   const agentState = new Map(); // taskId -> 'waiting' | 'armed' | 'locked'
@@ -71,6 +74,32 @@ module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask
     return true;
   }
 
+  /**
+   * ONE place that closes remote access for a task. Safe to call more than once.
+   *   1. stops all input at once (halt),
+   *   2. tells the host agent(s) to lock down, then drops their sockets,
+   *   3. forgets the per-task state (agent list, agent state, the countdown),
+   *   4. keeps a short 'ended' mark so a late event from a slow vendor tab is still refused, then releases that too.
+   * The caller (terminateTask in server.js) has already updated the database and notified both browsers.
+   */
+  function teardown(taskId, reason = 'ended', extra = {}) {
+    halt(taskId, 'ended', { endReason: reason, ...extra });
+    if (timers && typeof timers.cancel === 'function') timers.cancel(taskId);
+    const ids = [...(agents.get(taskId) || [])];
+    agents.delete(taskId);
+    agentState.delete(taskId);
+    if (ids.length) {
+      const drop = setTimeout(() => {
+        ids.forEach((id) => {
+          try { const sock = io.sockets && io.sockets.sockets && io.sockets.sockets.get(id); if (sock) sock.disconnect(true); } catch (_) { /* already gone */ }
+        });
+      }, 250);                                   // lets the 'control-halt' packet reach the agent first
+      if (drop.unref) drop.unref();
+    }
+    const forget = setTimeout(() => { if (halted.get(taskId) === 'ended') halted.delete(taskId); }, ENDED_MARK_MS);
+    if (forget.unref) forget.unref();
+  }
+
   // The agent connects with a short-lived, task-scoped token (see POST /api/tasks/:id/agent-token)
   function registerAgent(socket) {
     const { taskId } = socket.data.agent;
@@ -82,6 +111,7 @@ module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask
         if (!task || !['pending', 'active'].includes(task.status)) return reply({ ok: false, error: 'This task is not open any more.' });
         if (!agents.has(taskId)) agents.set(taskId, new Set());
         agents.get(taskId).add(socket.id);
+        if (timers && typeof timers.ensure === 'function') await timers.ensure(taskId).catch((e) => console.error('[RC] timer:', e.message));   // the countdown exists from the moment a connection forms
         reply({
           ok: true, taskId, title: task.title, targetProcess: task.target_process, taskType: task.task_type || '',
           allowedPaths: parseList(task.allowed_paths), allowedApps: parseList(task.allowed_apps),
@@ -121,7 +151,7 @@ module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask
   // and the vendor can send input events.
   function registerBrowser(socket, user) {
     let windowStart = 0, count = 0;      // per-socket rate limit
-    let authOk = { taskId: null, until: 0 };
+    let authOk = { taskId: null, until: 0, allowedPaths: [] };
 
     socket.on('agent-status', async (payload, ack) => {
       const taskId = Number(payload && payload.taskId);
@@ -141,15 +171,33 @@ module.exports = function createRemoteControl({ io, db, authorizeRtc, emitToTask
 
         if (authOk.taskId !== taskId || authOk.until < now) { // hit the database at most every 2 s, not per mouse move
           const role = await authorizeRtc(user, taskId);
-          authOk = { taskId, until: role === 'vendor' ? now + AUTH_CACHE_MS : 0 };
+          let allowedPaths = [];
+          if (role === 'vendor') {
+            const row = await db.get('SELECT allowed_paths, window_end FROM tasks WHERE id = ?', [taskId]);
+            allowedPaths = readList(row && row.allowed_paths);
+          }
+          authOk = { taskId, until: role === 'vendor' ? now + AUTH_CACHE_MS : 0, allowedPaths };
         }
         if (authOk.until < now || halted.has(taskId)) return;
 
         const event = parseInput(msg.e);
-        if (event) sendToAgents(taskId, 'remote-input', event);
+        if (!event) return;
+
+        // Scope check on the server, before the event ever reaches the Client's PC: a folder outside the approved
+        // paths is a breach, not just a refused click. (The host agent checks again on the PC itself.)
+        if (event.t === 'open' && checkPathScope(event.p, authOk.allowedPaths) === 'outside') {
+          halt(taskId, 'violation', { permanent: true });      // synchronous: nothing more can pass while the teardown runs
+          authOk = { taskId: null, until: 0, allowedPaths: [] };
+          if (typeof onBreach === 'function') {
+            Promise.resolve(onBreach({ taskId, user, kind: 'path', processName: 'File Manager', detail: event.p.slice(0, 200) }))
+              .catch((e) => console.error('[RC] breach handler failed:', e.message));
+          }
+          return;
+        }
+        sendToAgents(taskId, 'remote-input', event);
       } catch (err) { /* a malformed event must never crash the server */ }
     });
   }
 
-  return { registerAgent, registerBrowser, halt, resume, agentOnline, isHalted: (id) => halted.has(id) };
+  return { registerAgent, registerBrowser, halt, resume, teardown, agentOnline, isHalted: (id) => halted.has(id) };
 };

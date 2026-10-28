@@ -791,6 +791,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (STATE.pendingViolation && STATE.pendingViolation.taskId === d.taskId) closeViolationModal();
                 // These are about ONE task. Your own login stays active.
                 if (!quiet) ScopeDeskRTC.notifyTerminated({ reason: d.reason, taskId: d.taskId, title: d.title });
+                // Friendly notice in the window + every capture switched off. A breach with alerts on already shows the blocking overlay.
+                if (!(d.reason === 'security_violation' && !quiet)) {
+                    try { window.ScopeDeskScreenShare.showSessionClosed({ reason: d.reason, taskId: d.taskId, title: d.title }); } catch (_) { /* notice is optional */ }
+                } else {
+                    try { window.ScopeDeskScreenShare.stopAll(); } catch (_) { /* nothing to stop */ }
+                }
                 if (quiet && d.reason === 'security_violation') { loadTasks(); return; }
                 if (d.reason === 'time_expired') toast(`Task "${d.title || '#' + d.taskId}" has expired (its time window ended). You are still signed in.`);
                 else if (d.reason !== 'client_terminated') toast(d.message || 'Session ended.');

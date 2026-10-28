@@ -3,6 +3,7 @@
  * Validation for a new support task. Pure functions (no database, no Express), so the rules are easy to test.
  * The browser form is a convenience only: every rule here is enforced again on the server.
  */
+const path = require('path');
 const { cleanAppName, canonicalName, appKey, isBlockedApp } = require('../agent/app-catalog');
 
 const DURATION_OPTIONS = [15, 30, 60, 120];     // minutes: exactly what the duration selector offers
@@ -97,4 +98,45 @@ function readList(column) {
   try { const v = JSON.parse(column); return Array.isArray(v) ? v.map(String) : []; } catch (_) { return []; }
 }
 
-module.exports = { DURATION_OPTIONS, TASK_MIN, TASK_MAX, extractPaths, checkPath, parseAllowedApps, validateTaskRequest, readList };
+
+// ---------- scope check used while a session is running ----------
+const isWinPath = (s) => /^[a-zA-Z]:|^\\\\/.test(s);
+const hasPlaceholder = (s) => /^%[A-Za-z_][A-Za-z0-9_]*%|^~/.test(s);
+
+function canonical(p) {
+  const s = String(p || '').trim();
+  const win = isWinPath(s);
+  const api = win ? path.win32 : path.posix;
+  let n = api.normalize(s);
+  const sep = win ? '\\' : '/';
+  if (win) n = n.toLowerCase();
+  const root = win ? /^[a-z]:\\$/.test(n) : n === '/';
+  if (n.length > 1 && n.endsWith(sep) && !root) n = n.slice(0, -1);
+  return { n, sep, win };
+}
+
+/**
+ * Is `candidate` the same folder as one of `allowedPaths`, or below it? Whole path segments only:
+ * "C:\\Data2" is NOT inside "C:\\Data". Returns:
+ *   'inside'   definitely inside an approved folder
+ *   'outside'  definitely outside every approved folder (this is a breach)
+ *   'unknown'  cannot be decided here (no approved folders were named, or one uses %VARIABLES% / ~ that only the
+ *              Client's PC can expand). The host agent on the Client's PC makes the final call in that case.
+ */
+function checkPathScope(candidate, allowedPaths) {
+  const list = (Array.isArray(allowedPaths) ? allowedPaths : []).map(String).filter(Boolean);
+  if (list.length === 0) return 'unknown';
+  const c = String(candidate || '').trim();
+  if (!c || hasPlaceholder(c)) return 'unknown';
+  const cand = canonical(c);
+  let undecidable = false;
+  for (const a of list) {
+    if (hasPlaceholder(a)) { undecidable = true; continue; }
+    const al = canonical(a);
+    if (al.sep !== cand.sep) continue;
+    if (cand.n === al.n || cand.n.startsWith(al.n.endsWith(al.sep) ? al.n : al.n + al.sep)) return 'inside';
+  }
+  return undecidable ? 'unknown' : 'outside';
+}
+
+module.exports = { checkPathScope, DURATION_OPTIONS, TASK_MIN, TASK_MAX, extractPaths, checkPath, parseAllowedApps, validateTaskRequest, readList };

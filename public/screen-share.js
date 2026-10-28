@@ -80,6 +80,99 @@
     };
   }
 
+  // ---------- every capture this page ever started, so a drop signal can really switch all of them off ----------
+  var openStreams = [];
+  function remember(s) { if (s && openStreams.indexOf(s) === -1) openStreams.push(s); }
+  function stopStream(s) {
+    if (!s || typeof s.getTracks !== 'function') return;
+    try { s.getTracks().forEach(function (t) { try { t.stop(); } catch (_) { /* already stopped */ } }); } catch (_) { /* stream gone */ }
+  }
+  /** Stops every media track of every capture started through this module. Never throws. Returns how many streams were stopped. */
+  function stopAll() {
+    var list = openStreams; openStreams = [];
+    list.forEach(stopStream);
+    return list.length;
+  }
+
+  var isDesktopApp = function () {
+    try { return !!(typeof window !== 'undefined' && window.scopedeskDesktop && window.scopedeskDesktop.isDesktop); } catch (_) { return false; }
+  };
+
+  // ---------- friendly "the session has closed" notice ----------
+  var END_TEXT = {
+    time_expired: { title: 'Your support session has ended', body: 'The approved time ran out, so screen sharing and remote control were switched off automatically. Nothing more can be seen or done on your computer.', tone: 'info' },
+    security_violation: { title: 'We closed the session to keep you safe', body: 'The vendor tried to go outside what you approved, so screen sharing and remote control were stopped straight away. Your computer is no longer visible or controllable by them.', tone: 'warn' },
+    client_terminated: { title: 'You ended the session', body: 'Screen sharing and remote control are off. Nobody can see or control your computer now.', tone: 'info' },
+    completed: { title: 'The session is finished', body: 'The vendor marked the task as complete. Screen sharing and remote control are off.', tone: 'info' }
+  };
+  var END_DEFAULT = { title: 'The session has closed safely', body: 'Screen sharing and remote control were switched off. Nobody can see or control your computer now.', tone: 'info' };
+
+  /** Pure: what to tell the person for an end reason. */
+  function describeEnd(info) {
+    var reason = info && info.reason;
+    var t = (reason && END_TEXT[reason]) || END_DEFAULT;
+    return { title: t.title, body: t.body, tone: t.tone, task: info && info.title ? String(info.title).slice(0, 80) : '' };
+  }
+
+  var lastEndShown = { key: '', at: 0 };
+  var STYLE_ID = 'scopedesk-session-closed-style';
+  var CSS = '.sd-closed{position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:2147483000;width:min(560px,calc(100vw - 24px));' +
+    'display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);' +
+    'font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#10222e;background:#ecf8f1;border:1px solid #9fd6b8;animation:sdIn .22s ease-out}' +
+    '.sd-closed.warn{background:#fff4e5;border-color:#f0b35f}' +
+    '.sd-closed .sd-ico{flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:#1c9e63;color:#fff;font-weight:700}' +
+    '.sd-closed.warn .sd-ico{background:#d9780f}' +
+    '.sd-closed .sd-txt{flex:1;min-width:0}.sd-closed .sd-h{font-weight:700;font-size:15px;margin:0 0 2px}.sd-closed .sd-b{margin:0}' +
+    '.sd-closed .sd-t{margin:6px 0 0;font-size:12px;opacity:.7}' +
+    '.sd-closed button{flex:none;border:0;border-radius:10px;padding:8px 14px;font:inherit;font-weight:600;cursor:pointer;background:#10222e;color:#fff}' +
+    '.sd-closed button:focus-visible{outline:3px solid #6aa9ff;outline-offset:2px}' +
+    '@keyframes sdIn{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}' +
+    '@media (prefers-reduced-motion:reduce){.sd-closed{animation:none}}';
+
+  /**
+   * Shows the notice at the top of the app window. Switches off every capture first, then draws.
+   * Safe to call from any event handler: it catches its own errors, ignores duplicates for the same event
+   * (several signals arrive for one ending) and does nothing outside a browser.
+   */
+  function showSessionClosed(info) {
+    var stopped = 0;
+    try { stopped = stopAll(); } catch (_) { /* nothing to stop */ }
+    try {
+      if (typeof document === 'undefined' || !document.body) return { shown: false, stopped: stopped };
+      var key = String((info && info.taskId) == null ? '' : info.taskId) + '|' + String((info && info.reason) || '');
+      var now = Date.now();
+      if (lastEndShown.key === key && now - lastEndShown.at < 6000) return { shown: false, stopped: stopped };
+      lastEndShown = { key: key, at: now };
+
+      var d = describeEnd(info);
+      if (!document.getElementById(STYLE_ID)) {
+        var st = document.createElement('style'); st.id = STYLE_ID; st.textContent = CSS; document.head.appendChild(st);
+      }
+      var old = document.getElementById('scopedeskSessionClosed');
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+
+      var box = document.createElement('div');
+      box.id = 'scopedeskSessionClosed';
+      box.className = 'sd-closed' + (d.tone === 'warn' ? ' warn' : '');
+      box.setAttribute('role', 'alert');
+      box.setAttribute('aria-live', 'assertive');
+      var ico = document.createElement('div'); ico.className = 'sd-ico'; ico.setAttribute('aria-hidden', 'true'); ico.textContent = d.tone === 'warn' ? '!' : '\u2713';
+      var txt = document.createElement('div'); txt.className = 'sd-txt';
+      var h = document.createElement('p'); h.className = 'sd-h'; h.textContent = d.title;
+      var b = document.createElement('p'); b.className = 'sd-b'; b.textContent = d.body;
+      txt.appendChild(h); txt.appendChild(b);
+      if (d.task) { var t = document.createElement('p'); t.className = 'sd-t'; t.textContent = 'Task: ' + d.task; txt.appendChild(t); }
+      var btn = document.createElement('button'); btn.type = 'button'; btn.textContent = 'OK, got it';
+      btn.addEventListener('click', function () { if (box.parentNode) box.parentNode.removeChild(box); });
+      box.appendChild(ico); box.appendChild(txt); box.appendChild(btn);
+      document.body.appendChild(box);
+      try { btn.focus({ preventScroll: true }); } catch (_) { /* focus is a nicety */ }
+      return { shown: true, stopped: stopped };
+    } catch (_) {
+      return { shown: false, stopped: stopped };      // a notice problem must never break the page
+    }
+  }
+
   function create(options) {
     var opts = options || {};
     var log = opts.log || function () {};
@@ -124,6 +217,10 @@
 
     function fail(err) {
       var c = classifyError(err);
+      if (isDesktopApp() && (c.code === 'cancelled' || c.code === 'no-source' || c.code === 'unknown')) {
+        // The desktop app shares the main screen directly: there is no picture to click, so the browser advice would only confuse.
+        c = { code: c.code, retryable: true, message: c.message, tip: 'ScopeDesk could not start sharing your screen just now. Press Share my screen again. If it keeps happening, close and reopen ScopeDesk.' };
+      }
       log('[screen-share] ' + (err && err.name) + ': ' + (err && err.message));
       var extra = attempts >= 3 && c.retryable ? ' If this keeps happening, press "Not yet" and try again in a moment.' : '';
       tip(c.tip + extra);
@@ -146,7 +243,7 @@
       if (stream) { stopTracks(stream); stream = null; }
 
       setState('prompting', { attempt: attempts });
-      tip('A window will open: click the picture of your screen first, then press Share.');
+      tip(isDesktopApp() ? 'Starting screen sharing...' : 'A window will open: click the picture of your screen first, then press Share.');
 
       var got;
       try {
@@ -173,6 +270,7 @@
       }
 
       stream = got;
+      remember(got);
       track.addEventListener('ended', function () {
         // "Stop sharing" in the browser bar, or the display went away. Reported only; ending the session is the caller's decision.
         if (stream !== got) return;
@@ -207,5 +305,5 @@
     };
   }
 
-  return { create: create, classifyError: classifyError, bindTipElement: bindTipElement, TIP_PICK_SCREEN: TIP_PICK_SCREEN, TIP_ENTIRE_SCREEN: TIP_ENTIRE_SCREEN };
+  return { create: create, stopAll: stopAll, showSessionClosed: showSessionClosed, describeEnd: describeEnd, classifyError: classifyError, bindTipElement: bindTipElement, TIP_PICK_SCREEN: TIP_PICK_SCREEN, TIP_ENTIRE_SCREEN: TIP_ENTIRE_SCREEN };
 }));

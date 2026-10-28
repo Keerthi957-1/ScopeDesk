@@ -8,20 +8,19 @@ const cfResponse = { ok: true, json: async () => ({ iceServers: [
   { urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turn:turn.cloudflare.com:53?transport=udp', 'turns:turn.cloudflare.com:5349?transport=tcp'], username: 'u1', credential: 'c1' }
 ] }) };
 
-test('nothing configured: hybrid "all" policy, several valid STUN urls and the public relay fallback', async () => {
+test('nothing configured: hybrid "all" policy, several valid STUN urls, honest "no relay" (no dead public server)', async () => {
   const c = await buildRtcConfig({ userId: 1, expiresAtMs: NOW + 600000, env: {}, now: NOW, log: quiet });
   assert.strictEqual(c.iceTransportPolicy, 'all');
   assert.ok(c.iceServers[0].urls.length >= 3 && c.iceServers[0].urls.every((u) => /^stun:[a-z0-9.-]+:\d+$/.test(u)));   // no malformed "stun:://" entries
-  assert.strictEqual(c.relay, true); assert.strictEqual(c.relayKind, 'public');
-  const turn = c.iceServers.find((s) => s.username);
-  assert.ok(turn.urls.some((u) => u.startsWith('turn:openrelay.metered.ca:80')) && turn.urls.some((u) => u.includes('transport=tcp')));
-  assert.strictEqual(relayConfigured({}), false);          // /api/health still tells the admin that no PRIVATE relay is set up
+  assert.strictEqual(c.relay, false); assert.strictEqual(c.relayKind, null);
+  assert.ok(!c.iceServers.some((s) => s.username));
+  assert.ok(!JSON.stringify(c).includes('openrelay'));
+  assert.strictEqual(relayConfigured({}), false);
 });
 
-test('PUBLIC_TURN_FALLBACK=false: STUN only, relay=false', async () => {
-  const c = await buildRtcConfig({ userId: 1, expiresAtMs: NOW + 600000, env: { PUBLIC_TURN_FALLBACK: 'false' }, now: NOW, log: quiet });
-  assert.strictEqual(c.relay, false); assert.strictEqual(c.relayKind, null); assert.strictEqual(c.iceTransportPolicy, 'all');
-  assert.ok(!c.iceServers.some((s) => s.username));
+test('a leftover PUBLIC_TURN_FALLBACK variable changes nothing: there is no shared public relay any more', async () => {
+  const c = await buildRtcConfig({ userId: 1, expiresAtMs: NOW + 600000, env: { PUBLIC_TURN_FALLBACK: 'true' }, now: NOW, log: quiet });
+  assert.strictEqual(c.relay, false); assert.ok(!c.iceServers.some((s) => s.username));
 });
 
 test('the configuration carries the members RTCPeerConnection needs', async () => {
@@ -51,7 +50,7 @@ test('Cloudflare outage or bad key: falls back without throwing or leaking the t
   const logged = [];
   const env = { CLOUDFLARE_TURN_KEY_ID: 'K', CLOUDFLARE_TURN_API_TOKEN: 'SECRET-TOKEN' };
   const c = await buildRtcConfig({ userId: 1, expiresAtMs: NOW + 600000, env, now: NOW, fetchFn: async () => ({ ok: false, status: 401 }), log: { error: (...a) => logged.push(a.join(' ')) } });
-  assert.strictEqual(c.relayKind, 'public'); assert.strictEqual(c.iceTransportPolicy, 'all');
+  assert.strictEqual(c.relayKind, null); assert.strictEqual(c.relay, false); assert.strictEqual(c.iceTransportPolicy, 'all');
   assert.ok(logged.length === 1 && !logged[0].includes('SECRET-TOKEN'));
 });
 
@@ -84,7 +83,7 @@ test('Metered: credentials fetched from the app sub-domain, array answer used, k
   const logged = [];
   const bad = await buildRtcConfig({ userId: 1, expiresAtMs: NOW + 600000, env: { METERED_APP: 'myapp', METERED_API_KEY: 'TOP-SECRET-KEY' }, now: NOW,
     fetchFn: async () => ({ ok: false, status: 403 }), log: { error: (...a) => logged.push(a.join(' ')) } });
-  assert.strictEqual(bad.relayKind, 'public');
+  assert.strictEqual(bad.relayKind, null);
   assert.ok(logged.length === 1 && !logged[0].includes('TOP-SECRET-KEY'));
 });
 
@@ -92,7 +91,7 @@ test('Metered app name cannot redirect the request to another host', async () =>
   let called = false;
   for (const app of ['evil.com/x', 'a b', '../x', 'x@evil.com', '']) {
     const c = await buildRtcConfig({ userId: 1, expiresAtMs: NOW + 600000, env: { METERED_APP: app, METERED_API_KEY: 'k' }, now: NOW, log: quiet, fetchFn: async () => { called = true; return { ok: true, json: async () => [] }; } });
-    assert.strictEqual(c.relayKind, 'public');
+    assert.strictEqual(c.relayKind, null);
   }
   assert.strictEqual(called, false);
 });
