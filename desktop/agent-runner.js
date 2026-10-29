@@ -33,6 +33,7 @@ function explainCrash(lines, code) {
 function createAgentRunner({ agentDir, serverUrl, forkFn = fork, execPath = process.execPath, onStatus = () => {}, onViolation = () => {}, log = () => {}, rewarmMs = 500 }) {
   let child = null, inited = false, quitting = false, rewarmTimer = null;
   let display = null;    // the display the Client shares ({x, y, width, height, primary}); the agent maps positions onto it
+  let ownWindow = null;  // ScopeDesk's own window rectangle: the agent refuses vendor clicks inside it
   let lastReason = '';
   let mismatch = '';     // set when the forked agent is not this app's version: Start is refused with this text   // the agent's own explanation ({type:'fatal'} or {type:'ended'}), better than anything parsed from stderr
   let status = { ...IDLE, seq: 0 };
@@ -138,6 +139,7 @@ function createAgentRunner({ agentDir, serverUrl, forkFn = fork, execPath = proc
     try {
       child.send(blockReason ? { type: 'init', token, viewOnly: !!viewOnly, blockReason: String(blockReason).slice(0, 300) } : { type: 'init', token, viewOnly: !!viewOnly });
       if (display) child.send({ type: 'display', display });
+      if (ownWindow) child.send({ type: 'own-window', bounds: ownWindow });
     } catch (e) { return { ok: false, error: 'The host agent is not reachable: ' + e.message }; }
     return { ok: true };
   }
@@ -151,6 +153,11 @@ function createAgentRunner({ agentDir, serverUrl, forkFn = fork, execPath = proc
   function setDisplay(d) {
     display = d || null;
     if (child && inited) { try { child.send({ type: 'display', display }); } catch (_) { /* gone */ } }
+  }
+
+  function setOwnWindow(b) {
+    ownWindow = b || null;
+    if (child && inited) { try { child.send({ type: 'own-window', bounds: ownWindow }); } catch (_) { /* gone */ } }
   }
 
   function freeze() { if (child && inited) { try { child.send({ type: 'freeze' }); } catch (_) { /* gone */ } } }
@@ -182,7 +189,7 @@ function createAgentRunner({ agentDir, serverUrl, forkFn = fork, execPath = proc
 
   function shutdown() { quitting = true; clearTimeout(rewarmTimer); const c = child; if (c) { child = null; try { c.send({ type: 'stop' }); } catch (_) { /* gone */ } setTimeout(() => { try { c.kill(); } catch (_) { /* gone */ } }, 300).unref(); } }
 
-  return { warm, init, start: init, input, freeze, setDisplay, stop, endTask, fail, isBlocked: (id) => blocked.has(id), shutdown, status: () => ({ ...status }), logs: () => tail.slice() };
+  return { warm, init, start: init, input, freeze, setDisplay, setOwnWindow, stop, endTask, fail, isBlocked: (id) => blocked.has(id), shutdown, status: () => ({ ...status }), logs: () => tail.slice() };
 }
 
 module.exports = { createAgentRunner, explainCrash };

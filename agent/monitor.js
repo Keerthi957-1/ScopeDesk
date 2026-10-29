@@ -19,8 +19,11 @@
 const { normalize } = require('./config');
 
 class ForegroundMonitor {
-  constructor({ policy, probe, pollMs, strikes, attributionMs, onViolation, onState, onDiag, log, debug }) {
+  constructor({ policy, probe, pollMs, strikes, attributionMs, onViolation, onState, onDiag, log, debug, ownPid = null }) {
     this.policy = policy; this.probe = probe;
+    // ScopeDesk's own window (the desktop app that started this agent). Having it in front is NEUTRAL: never a violation, and
+    // the vendor's clicks may go past it to the approved app. The injector separately refuses clicks INSIDE ScopeDesk's window.
+    this.ownPid = Number.isInteger(ownPid) && ownPid > 0 ? ownPid : null;
     this.onDiag = typeof onDiag === 'function' ? onDiag : () => {};
     this.lastDiag = null;
     this.pollMs = pollMs; this.strikes = strikes; this.attributionMs = attributionMs;
@@ -68,6 +71,7 @@ class ForegroundMonitor {
   // -> { ok } | { ok:false, kind:'app'|'path', name, detail, soft? }   (soft = could not be verified; never reported, input is dropped)
   async evaluate(win) {
     if (!win || !win.owner) return { ok: false, kind: 'app', name: '(no foreground window)' };
+    if ((this.ownPid && win.owner.processId === this.ownPid) || /^scopedesk$/i.test(String(win.owner.name || '').trim())) return { ok: false, neutral: true, kind: 'app', name: 'ScopeDesk' };
     const names = [win.owner.name, win.owner.path ? String(win.owner.path).split(/[\\/]/).pop() : ''].filter(Boolean);
     const norm = names.map(normalize);
     const label = win.owner.name || names[0] || 'unknown';
@@ -109,6 +113,8 @@ class ForegroundMonitor {
 
     if (this.state === 'waiting') {
       if (result.ok) { this.log('info', 'An in-scope window is in front. Enforcement is ON.'); this.diag(''); this.setState('armed'); }
+      else if (result.neutral) this.diag('waiting: ScopeDesk is in front. Click the approved app (the vendor can also click it in the shared picture).');
+      else if (!result.soft && Date.now() - this.lastInputAt <= this.attributionMs && (result.kind === 'path' || ++this.bad >= this.strikes)) this.flag(result);   // the vendor's click opened something else
       else {
         const front = (win && win.owner && win.owner.name) || result.name || 'nothing';
         const name = String(front).slice(0, 60);
@@ -118,7 +124,7 @@ class ForegroundMonitor {
       }
       return;
     }
-    if (result.ok || result.soft) { this.bad = 0; return; }
+    if (result.ok || result.soft || result.neutral) { this.bad = 0; return; }   // ScopeDesk itself in front is never a violation
     if (Date.now() - this.lastInputAt > this.attributionMs) { this.bad = 0; return; } // the Client switched windows, not the vendor
     if (result.kind === 'path' || ++this.bad >= this.strikes) this.flag(result);
   }
@@ -130,12 +136,22 @@ class ForegroundMonitor {
 
   // Called by the injector before it applies an event. Returns true if the event may be applied.
   async permit(event) {
-    if (this.state !== 'armed') return false;
+    if (this.state === 'locked') return false;
     const { result } = await this.read(150);
+    const mouse = ['move', 'down', 'up', 'wheel'].includes(event.t);
     if (result.ok) {
+      if (this.state === 'waiting') { this.log('info', 'An in-scope window is in front. Enforcement is ON.'); this.diag(''); this.setState('armed'); }
       if (event.t !== 'move') this.lastInputAt = Date.now();
       return true;
     }
+    // ScopeDesk is in front (the Client just used it): mouse input may go to the approved app behind it, like AnyDesk. Keys never
+    // (they would type into ScopeDesk). Whatever the click brings to front is checked by poll(); an unapproved app is a violation.
+    if (result.neutral) {
+      if (!mouse) return false;
+      if (event.t !== 'move') this.lastInputAt = Date.now();
+      return true;
+    }
+    if (this.state !== 'armed') return false;
     if (event.t !== 'move' && !result.soft) this.flag(result); // a click/key/scroll aimed at an out-of-scope window
     return false;
   }

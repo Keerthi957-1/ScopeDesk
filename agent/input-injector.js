@@ -74,7 +74,11 @@ class InputInjector {
     this.ready = false;
     this.reason = '';          // why input is off, in words the Client can read
     this.display = null;       // { x, y, width, height, primary } of the shared display (null = primary)
-    this.windowOnly = false;   // a single window is shared: watch only
+    this.windowOnly = false;   // a single window is shared and cannot be located on this OS: watch only
+    this.windowHandle = null;  // a single window is shared: positions are mapped onto THAT window (AnyDesk-style window session)
+    this.windowRectCache = { at: 0, rect: null };
+    this.ownWindow = null;     // ScopeDesk's own window on screen: the vendor's clicks there are refused (no pressing Stop for the Client)
+    this.droppedButtons = new Set();
     this.screenSize = null;
   }
 
@@ -96,6 +100,15 @@ class InputInjector {
     // One WINDOW is shared (not a screen): the vendor may watch, but input is off. A window moves, overlaps and resizes, so a
     // position in the vendor's picture cannot be mapped safely onto this desktop.
     this.windowOnly = !!(d && d.windowOnly);
+    this.windowHandle = d && d.window && Number.isFinite(Number(d.window.handle)) ? Number(d.window.handle) : null;
+    this.windowRectCache = { at: 0, rect: null };
+    if (this.windowHandle !== null) {
+      this.display = null; this.screenSize = null;
+      // The OS input library must be able to find the window; otherwise fall back to watch-only (never guess positions)
+      if (!nut || typeof nut.getWindows !== 'function') { this.windowHandle = null; this.windowOnly = true; this.log('warn', 'Shared: one window, but this input library cannot locate windows: watch only'); return; }
+      this.log('info', 'Shared: one window (vendor input is mapped onto it)');
+      return;
+    }
     if (this.windowOnly) { this.display = null; this.screenSize = null; this.log('info', 'Shared: one window (vendor input is off)'); return; }
     const ok = d && [d.x, d.y, d.width, d.height].every((n) => Number.isFinite(n)) && d.width > 0 && d.height > 0;
     this.display = ok ? { x: d.x, y: d.y, width: d.width, height: d.height, primary: d.primary === true } : null;
@@ -119,7 +132,34 @@ class InputInjector {
 
   get state() { return this.monitor.state; }
 
+  /** ScopeDesk's own window rectangle (same units as positions) or null when it is minimised / hidden. */
+  setOwnWindow(b) {
+    const ok = b && [b.x, b.y, b.width, b.height].every((n) => Number.isFinite(n)) && b.width > 0 && b.height > 0;
+    this.ownWindow = ok ? { x: b.x, y: b.y, width: b.width, height: b.height } : null;
+  }
+  insideOwnWindow(p) {
+    const w = this.ownWindow;
+    return !!w && p.x >= w.x && p.x < w.x + w.width && p.y >= w.y && p.y < w.y + w.height;
+  }
+
+  // The shared window's current rectangle (it may have moved or been resized since the last event). Cached for 250 ms.
+  async windowRect() {
+    if (Date.now() - this.windowRectCache.at < 250 && this.windowRectCache.rect) return this.windowRectCache.rect;
+    const wins = await nut.getWindows();
+    const w = (wins || []).find((x) => Number(x.windowHandle) === this.windowHandle);
+    if (!w) return null;
+    const r = typeof w.getRegion === 'function' ? await w.getRegion() : await w.region;
+    const rect = r && r.width > 0 && r.height > 0 ? { x: r.left, y: r.top, width: r.width, height: r.height, win: w } : null;
+    this.windowRectCache = { at: Date.now(), rect };
+    return rect;
+  }
+
   async point(x, y) {
+    if (this.windowHandle !== null) {
+      const r = await this.windowRect();
+      if (!r) return null;                                            // the shared window was closed or minimised
+      return new nut.Point(Math.round(r.x + x * (r.width - 1)), Math.round(r.y + y * (r.height - 1)));
+    }
     const d = this.display;
     if (d && !d.primary) return new nut.Point(Math.round(d.x + x * (d.width - 1)), Math.round(d.y + y * (d.height - 1)));
     if (!this.screenSize) this.screenSize = { w: await nut.screen.width(), h: await nut.screen.height() };
@@ -141,7 +181,17 @@ class InputInjector {
       return;
     }
 
-    await mouse.setPosition(await this.point(event.x, event.y));
+    const p = await this.point(event.x, event.y);
+    if (!p) return;
+    // Never let the vendor click INSIDE ScopeDesk's own window (Stop / Terminate / alert switches belong to the Client)
+    if (event.t === 'down' && this.insideOwnWindow(p)) { this.droppedButtons.add(event.b); this.log('info', 'Vendor click on the ScopeDesk window ignored'); return; }
+    if (event.t === 'up' && this.droppedButtons.delete(event.b)) return;
+    await mouse.setPosition(p);
+    if (event.t === 'down' && this.windowHandle !== null) {
+      // Window session: bring the shared window to the front first, so the click lands on it and not on whatever covers it
+      const r = await this.windowRect();
+      if (r && r.win && typeof r.win.focus === 'function') { try { await r.win.focus(); } catch (_) { /* best effort */ } }
+    }
     if (event.t === 'down' || event.t === 'up') {
       const button = [Button.LEFT, Button.MIDDLE, Button.RIGHT][event.b];
       if (event.t === 'down') { await mouse.pressButton(button); this.buttons.add(button); }

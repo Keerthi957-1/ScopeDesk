@@ -44,7 +44,7 @@ if (!cfg.SERVER_URL) {
   process.exit(1);
 }
 
-let receiver = null, display = null;
+let receiver = null, display = null, ownWindow = null;
 let socket = null, monitor = null, injector = null, taskId = null, expiryTimer = null, started = false, ending = false;
 let viewOnlyMode = false, blockReason = '', policyName = '';   // set by connect(), read later by onHello() (they are separate functions, so it cannot be a parameter)
 
@@ -67,6 +67,7 @@ process.on('message', (m) => {
   // It is schema-checked again in injector.handle(), exactly like input from any other path.
   // The Client chose which display is shared: map the vendor's positions onto it
   if (m.type === 'display') { display = m.display || null; if (injector) { injector.setDisplay(display); announce(); } return; }
+  if (m.type === 'own-window') { ownWindow = m.bounds || null; if (injector) injector.setOwnWindow(ownWindow); return; }
   if (m.type === 'input' && injector && !ending && typeof m.data === 'string' && m.data.length <= MAX_FRAME) {
     let ev; try { ev = JSON.parse(m.data); } catch (_) { return; }
     injector.handle(ev);
@@ -150,7 +151,7 @@ async function onHello(res) {
         return shutdown(1, `Policy "${policy.name}" restricts folders, but this operating system cannot report which folder a window shows. Refusing to start (a weaker check would be unsafe).`);
       }
       monitor = new ForegroundMonitor({
-        policy, probe, pollMs: cfg.POLL_MS, strikes: cfg.STRIKES, attributionMs: cfg.ATTRIBUTION_MS, log,
+        policy, probe, pollMs: cfg.POLL_MS, ownPid: hasParent ? process.ppid : null, strikes: cfg.STRIKES, attributionMs: cfg.ATTRIBUTION_MS, log,
         debug: cfg.DEBUG_FOREGROUND,
         // Why vendor input is not being applied yet (which app is in front, or why the window cannot be read). App names only.
         onDiag: (detail) => { log('info', `Monitor: ${detail}`); notify({ type: 'diag', detail }); },
@@ -174,6 +175,7 @@ async function onHello(res) {
       injector = new InputInjector({ monitor, log, viewOnly: !!(cfg.VIEW_ONLY || viewOnlyMode), policy });
       injector.init();
       if (display) injector.setDisplay(display);
+      if (ownWindow) injector.setOwnWindow(ownWindow);
       receiver = createFileReceiver({
         policy, log, isLocked: () => !monitor || monitor.state === 'locked' || viewOnlyMode,
         report: (r) => { socket.emit('file-result', { taskId, ...r }); notify({ type: 'file', ok: r.ok, name: r.name || '', folder: r.folder || '', error: r.error || '' }); }

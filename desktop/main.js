@@ -54,13 +54,24 @@ async function waitForServer(url, ms) {
 // ---------- window ----------
 function setTitle(active) { if (win && !win.isDestroyed()) win.setTitle(active ? 'ScopeDesk - REMOTE CONTROL ACTIVE' : 'ScopeDesk'); }
 
+// ScopeDesk's own window position, in the same units the agent's mouse uses. The agent refuses vendor clicks inside it, so the
+// vendor can never press Stop / Terminate / alert switches in the Client's ScopeDesk.
+function ownWindowBounds() {
+  if (!win || win.isDestroyed() || win.isMinimized() || !win.isVisible()) return null;
+  let r = win.getBounds();
+  if (process.platform === 'win32') { try { r = require('electron').screen.dipToScreenRect(win, r); } catch (_) { /* keep DIP */ } }
+  return { x: r.x, y: r.y, width: r.width, height: r.height };
+}
+function reportOwnWindow() { if (runner) runner.setOwnWindow(ownWindowBounds()); }
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 860, minWidth: 980, minHeight: 640, show: false, backgroundColor: '#0b1a24', title: 'ScopeDesk',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false }
   });
   win.once('ready-to-show', () => win.show());
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { win = null; reportOwnWindow(); });
+  ['move', 'resize', 'minimize', 'restore', 'maximize', 'unmaximize', 'show', 'hide', 'enter-full-screen', 'leave-full-screen'].forEach((ev) => win.on(ev, reportOwnWindow));
   win.webContents.setWindowOpenHandler(({ url }) => {
     // The Vendor's full-screen workspace is the one window the page may open (same origin, remote-viewport.html only)
     if (isTrustedSender(url, SERVER_URL) && /\/remote-viewport\.html(\?|$)/.test(url)) {
@@ -144,6 +155,7 @@ function setupAgentIpc() {
   let wasActive = false;
   runner = createAgentRunner({
     agentDir: AGENT_DIR, serverUrl: SERVER_URL,
+    log: (line) => console.log(line),          // the host agent's own log (states, reasons; never typed text) in the terminal
     onViolation: onScopeViolation,
     onStatus: (s) => {
       const active = ['connected', 'running', 'starting'].includes(s.phase);
@@ -187,6 +199,7 @@ function setupAgentIpc() {
         }
       }
       r = runner.init(value);
+      reportOwnWindow();
     }
     if (!r.ok) runner.fail(r.error);                      // goes through the runner so it gets a proper sequence number
   });
@@ -206,7 +219,13 @@ function setupAgentIpc() {
   onCaptureGranted = (g) => {
     const { screen } = require('electron');
     const primaryId = screen.getPrimaryDisplay().id;
-    if (g.windowId) { runner.setDisplay({ windowOnly: true }); console.log('[ScopeDesk] sharing one window (vendor can watch, not control)'); return; }
+    if (g.windowId) {
+      // "window:<native handle>:0" -> the agent maps the vendor's positions onto that window and brings it to the front on a click
+      const handle = Number(String(g.windowId).split(':')[1]);
+      runner.setDisplay(Number.isFinite(handle) ? { window: { handle } } : { windowOnly: true });
+      console.log('[ScopeDesk] sharing one window' + (Number.isFinite(handle) ? ' (vendor input mapped onto it)' : ' (watch only)'));
+      return;
+    }
     const d = screen.getAllDisplays().find((x) => String(x.id) === String(g.displayId)) || screen.getPrimaryDisplay();
     runner.setDisplay(displayInfo(d, primaryId));
     console.log(`[ScopeDesk] sharing screen ${d.bounds.width}x${d.bounds.height}${d.id === primaryId ? ' (primary)' : ''}`);

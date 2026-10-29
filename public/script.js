@@ -1,4 +1,4 @@
-window.SCOPEDESK_BUILD = '2026-10-29-v9';
+window.SCOPEDESK_BUILD = '2026-10-29-v10';
 // Safety net: no form on this page may ever submit natively. A native submit reloads the page and looks like a "logout".
 document.addEventListener('submit', (e) => e.preventDefault(), true);
 
@@ -1567,17 +1567,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!ScopeDeskDesktop.available || !taskId) return Promise.resolve();
         const decision = await sendControlDecision(taskId, 'start');
         console.log('[ScopeDesk] remote-control start:', decision.ok ? 'approved by the server' : `refused (${decision.error})`, `(task ${taskId})`);
-        if (!decision.ok) { setRemoteBusy(false); toast(`Remote control could not start: ${decision.error}`, true); return; }
+        if (!decision.ok) { STATE.agentStartError = decision.error; setRemoteBusy(false); toast(`Remote control could not start: ${decision.error}`, true); renderLiveBar(); return; }
+        STATE.agentStartError = '';
         // The session config goes to the background agent through Electron IPC (ipcRenderer.send('init-session')). No dialog, no command.
         return ScopeDeskDesktop.ensureAgent({
             taskId,
             manual: manual === true,
             getToken: async (id) => (await api(`/api/tasks/${id}/agent-token`, { method: 'POST' })).agentToken,   // stays in memory, never shown
             setToken: () => {}
-        }).then((r) => { if (r && r.ok === false && r.error !== 'not-desktop') toast(r.error || 'Could not start the host agent.', true); })
-          .catch((err) => toast(err.message, true));
+        }).then((r) => { if (r && r.ok === false && r.error !== 'not-desktop') { STATE.agentStartError = r.error || 'Could not start the host agent.'; toast(STATE.agentStartError, true); renderLiveBar(); } })
+          .catch((err) => { STATE.agentStartError = err.message; toast(err.message, true); renderLiveBar(); });
     }
-    ScopeDeskDesktop.onStatus((st) => { STATE.desktopAgent = st; remoteBusy = false; clearTimeout(busyTimer); renderLiveBar(); });
+    ScopeDeskDesktop.onStatus((st) => { STATE.desktopAgent = st; if (['starting', 'connected', 'running'].includes(st.phase)) STATE.agentStartError = ''; remoteBusy = false; clearTimeout(busyTimer); renderLiveBar(); });
 
     const AGENT_TEXT = { stopped: 'stopped by you (the vendor can only watch)', unknown: 'not running', offline: 'not running', starting: 'starting...', error: 'could not start', waiting: `waiting for the approved app`, armed: 'Active Secured Session', locked: 'locked after a violation', 'view-only': 'view only (this computer is not allowing control)' };
     const SHARE_TEXT = { idle: 'not shared', starting: 'choosing screen...', waiting: 'shared, waiting for vendor', connecting: 'connecting...', live: 'live', lost: 'connection lost, retrying', stopped: 'stopped', closed: 'closed', expired: 'closed (time up)', violation: 'cut after a violation' };
@@ -1605,7 +1606,9 @@ document.addEventListener('DOMContentLoaded', () => {
             + (policyName && !['unknown', 'offline', 'starting', 'error', 'stopped'].includes(agentState) ? ` (policy: ${policyName}${policyName === '(app only)' ? ', no folder policy found' : ''})` : '')
             + ((agentState === 'error' || agentState === 'waiting' || agentState === 'stopped') && daMine && da.detail ? `: ${da.detail}` : '')
             + (agentState === 'view-only' && da && da.inputReason ? `: ${da.inputReason}` : '')
-            + (!ScopeDeskDesktop.available && ['unknown', 'offline'].includes(agentState) ? ' (you are in a web browser: open the ScopeDesk desktop app so the vendor can control this PC)' : '');
+            + (!ScopeDeskDesktop.available && ['unknown', 'offline'].includes(agentState) ? ' (you are in a web browser: open the ScopeDesk desktop app so the vendor can control this PC)' : '')
+            // Why it is not running (a refused start, or the last reason the agent stopped), so nothing fails silently
+            + (ScopeDeskDesktop.available && ['unknown', 'offline'].includes(agentState) ? (STATE.agentStartError ? `: ${STATE.agentStartError}` : (daMine && da.detail ? ` (last stop: ${da.detail})` : ' (press "Start remote control")')) : '');
         $('btnPairAgent').classList.toggle('hidden', !ScopeDeskDesktop.available);   // browsers cannot control the PC: desktop app only
         if (ScopeDeskDesktop.available) {
             // ONE authoritative state: the desktop app's agent status for this task (sequence-numbered, deduplicated in desktop-bridge.js)
@@ -1723,7 +1726,7 @@ document.addEventListener('DOMContentLoaded', () => {
         pickedSource = src;
         document.querySelectorAll('#sharePicker button.tile').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.id === src.id)));
         const note = $('sharePickerNote');
-        if (note) note.textContent = src.type === 'window' ? 'One window: the vendor can watch it but cannot control your computer. Choose a screen to allow control.' : '';
+        if (note) note.textContent = src.type === 'window' ? 'One window: the vendor sees and controls only this window (it is brought to the front when the vendor clicks it). The approved-app rules still apply.' : '';
         try { await desktopApi.selectSource(src); } catch (_) { /* the main screen is used */ }
     }
     async function loadSources() {
@@ -1746,7 +1749,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             return [h, grid];
         };
-        box.replaceChildren(...group('Screens (vendor can control)', displays), ...group('Windows (vendor can only watch)', list.filter((x) => x.type === 'window')));
+        box.replaceChildren(...group('Screens', displays), ...group('Windows (only that window is shown and controlled)', list.filter((x) => x.type === 'window')));
         box.hidden = list.length === 0;
         const keep = pickedSource && list.find((x) => x.id === pickedSource.id);
         const first = keep || displays.find((d) => d.primary) || displays[0] || list[0];
@@ -1769,7 +1772,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Already sharing ("Change what I share"): swap the picture on the live connection, no reconnect
         const cur = ScopeDeskRTC.current();
         if (cur.role === 'host' && cur.taskId === STATE.live.taskId) {
-            try { await ScopeDeskRTC.switchScreen(); $('shareModal').classList.remove('open'); toast(pickedSource && pickedSource.type === 'window' ? 'Now sharing one window (the vendor can only watch).' : 'Now sharing the screen you chose.'); }
+            try { await ScopeDeskRTC.switchScreen(); $('shareModal').classList.remove('open'); toast(pickedSource && pickedSource.type === 'window' ? 'Now sharing one window.' : 'Now sharing the screen you chose.'); }
             catch (err) { $('shareError').textContent = `Could not change what is shared: ${err.message}`; $('shareError').classList.remove('hidden'); }
             return;
         }

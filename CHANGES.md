@@ -1,3 +1,16 @@
+# Update 12 (build 2026-10-29-v10): window sessions with control, click-through past ScopeDesk, visible start errors
+
+| Change | Files |
+|---|---|
+| Sharing ONE window now allows control of that window (AnyDesk-style window session): positions are mapped onto the window's current rectangle and the window is brought to the front on each click. Falls back to watch-only only if the OS cannot locate the window | `agent/input-injector.js`, `desktop/main.js` |
+| ScopeDesk's own window in front is neutral: the vendor's clicks pass through to the approved app behind it (keys never), no violation. A click that brings an UNAPPROVED app forward is still a violation | `agent/monitor.js`, `agent/client-agent.js` |
+| The vendor can never click inside the ScopeDesk window (Stop, Terminate, alert switches stay the Client's) | `agent/input-injector.js`, `desktop/main.js`, `desktop/agent-runner.js` |
+| "Host agent: not running" now says why (refused start, or the last reason it stopped); the agent's log is printed in the terminal that runs `npm start` | `public/script.js`, `desktop/main.js` |
+
+Tests: root 168/168, desktop 40/40, agent 53/54 (active-win not installable in the test sandbox).
+
+---
+
 # Update 11 (build 2026-10-29-v9): stale host agent, screen/window picker, faster connection
 
 **"The host agent stopped: viewOnly is not defined"** does not come from the v8 files: in every agent version since v6, `viewOnly`

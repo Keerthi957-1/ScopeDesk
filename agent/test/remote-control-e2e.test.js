@@ -13,7 +13,7 @@ const { createAgentRunner } = require('../../desktop/agent-runner');
 const HARNESS = path.join(__dirname, 'helpers', 'real-agent-harness.js');
 const MAC_WORD = { owner: { name: 'Microsoft Word', path: '/Applications/Microsoft Word.app' }, title: 'Doc1', id: 1 };
 const WIN_WORD = { owner: { name: 'Microsoft Word', path: 'C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE' }, title: 'Doc1', id: 1 };
-const SCOPEDESK = { owner: { name: 'ScopeDesk', path: '/Applications/ScopeDesk.app' }, title: 'ScopeDesk', id: 2 };
+const SCOPEDESK = { owner: { name: 'Notepad', path: 'C:\\Windows\\notepad.exe' }, title: 'notes', id: 2 };   // an app that is NOT approved
 
 function rig({ hello = { allowedApps: ['Word'], targetProcess: 'Word' }, env = {} } = {}) {
   const messages = []; const statuses = []; let child = null;
@@ -77,7 +77,7 @@ test('e2e: while an unapproved app is in front, input is dropped and the reason 
     h.runner.init({ taskId: 7, token: 'a.b.c', manual: true });
     await h.waitFor(() => h.runner.status().phase === 'running');
     h.fg(SCOPEDESK);
-    await h.waitFor(() => /waiting: "ScopeDesk" is in front/.test(h.runner.status().detail));
+    await h.waitFor(() => /waiting: "Notepad" is in front/.test(h.runner.status().detail));
     h.server('remote-input', { t: 'down', x: 0.5, y: 0.5, b: 0 });
     await tick(150);
     assert.equal(h.os().length, 0);
@@ -259,7 +259,7 @@ test('e2e multi-monitor: positions land on the display the Client chose to share
   } finally { h.done(); }
 });
 
-test('e2e: sharing ONE window makes the session watch-only (input dropped, both sides told why); a screen again restores control', async () => {
+test('e2e: a window that cannot be located (no handle) is watch-only (input dropped, both sides told why); a screen again restores control', async () => {
   const h = await armedRig();
   try {
     h.runner.setDisplay({ windowOnly: true });
@@ -273,5 +273,70 @@ test('e2e: sharing ONE window makes the session watch-only (input dropped, both 
     await h.waitFor(() => h.runner.status().inputReady === true && h.runner.status().uiState === 'armed');
     h.server('remote-input', { t: 'move', x: 0.5, y: 0.5 });
     await h.waitFor(() => h.os().length === 1);
+  } finally { h.done(); }
+});
+
+// ---------------------------------------------------------------- window sessions, ScopeDesk in front, own window -------------
+const OWN = { owner: { name: 'Electron', path: 'C:\\x\\electron.exe', processId: process.pid }, title: 'ScopeDesk', id: 9 };   // harness parent = this test process
+
+test('e2e window session: positions map onto the shared window and a click brings it to the front first', async () => {
+  const h = await armedRig();
+  try {
+    h.runner.setDisplay({ window: { handle: 4242 } });
+    await h.waitFor(() => h.runner.status().inputReady === true && h.runner.status().uiState === 'armed');
+    h.server('remote-input', { t: 'down', x: 0.5, y: 0.5, b: 0 });
+    h.server('remote-input', { t: 'up', x: 0.5, y: 0.5, b: 0 });
+    await h.waitFor(() => h.os().filter((o) => o.op === 'release').length === 1);
+    const ops = h.os().map((o) => o.op);
+    assert.deepEqual(ops.slice(0, 3), ['move', 'focus', 'press']);
+    assert.deepEqual([h.os()[0].x, h.os()[0].y], [100 + Math.round(0.5 * 799), 50 + Math.round(0.5 * 599)]);
+  } finally { h.done(); }
+});
+
+test('e2e: with ScopeDesk itself in front the vendor can still click through to the approved app (keys are held back), never a violation', async () => {
+  const h = rig();
+  try {
+    h.runner.init({ taskId: 7, token: 'a.b.c', manual: true });
+    await h.waitFor(() => h.runner.status().phase === 'running');
+    h.fg(OWN);
+    await h.waitFor(() => /ScopeDesk is in front/.test(h.runner.status().detail));
+    h.server('remote-input', { t: 'down', x: 0.2, y: 0.2, b: 0 });
+    h.server('remote-input', { t: 'key', k: 'KeyA', d: true });
+    await h.waitFor(() => h.os().some((o) => o.op === 'press'));
+    await tick(120);
+    assert.equal(h.os().filter((o) => o.op === 'keydown').length, 0);          // typing into ScopeDesk: never
+    h.fg(MAC_WORD);                                                            // the click brought the approved app forward
+    await h.waitFor(() => h.runner.status().uiState === 'armed');
+    assert.notEqual(h.runner.status().uiState, 'locked');
+  } finally { h.done(); }
+});
+
+test('e2e: a vendor click that brings an UNAPPROVED app forward (while waiting) is a violation', async () => {
+  const h = rig();
+  try {
+    h.runner.init({ taskId: 7, token: 'a.b.c', manual: true });
+    await h.waitFor(() => h.runner.status().phase === 'running');
+    h.fg(OWN);
+    await h.waitFor(() => /ScopeDesk is in front/.test(h.runner.status().detail));
+    h.server('remote-input', { t: 'down', x: 0.9, y: 0.99, b: 0 });           // e.g. the taskbar
+    await h.waitFor(() => h.os().some((o) => o.op === 'press'));
+    h.fg({ owner: { name: 'Notepad', path: 'C:\\Windows\\notepad.exe' }, title: 'x', id: 3 });
+    await h.waitFor(() => h.runner.status().uiState === 'locked');
+  } finally { h.done(); }
+});
+
+test('e2e: clicks inside the ScopeDesk window are refused (the vendor cannot press Stop or Terminate for the Client)', async () => {
+  const h = await armedRig();
+  try {
+    h.runner.setOwnWindow({ x: 1000, y: 0, width: 900, height: 1000 });
+    await tick(50);
+    h.server('remote-input', { t: 'down', x: 0.8, y: 0.3, b: 0 });           // 1535,324: inside ScopeDesk
+    h.server('remote-input', { t: 'up', x: 0.8, y: 0.3, b: 0 });
+    h.server('remote-input', { t: 'down', x: 0.2, y: 0.3, b: 0 });           // outside: allowed
+    await h.waitFor(() => h.os().some((o) => o.op === 'press'));
+    await tick(100);
+    assert.equal(h.os().filter((o) => o.op === 'press').length, 1);
+    assert.equal(h.os().filter((o) => o.op === 'release').length, 0);
+    assert.ok(h.os().find((o) => o.op === 'press') && h.os().filter((o) => o.op === 'move').every((m) => m.x < 1000));
   } finally { h.done(); }
 });
