@@ -1,3 +1,83 @@
+# Update 11 (build 2026-10-29-v9): stale host agent, screen/window picker, faster connection
+
+**"The host agent stopped: viewOnly is not defined"** does not come from the v8 files: in every agent version since v6, `viewOnly`
+only appears where it is defined (`connect(token, viewOnly = false, ...)`), and `onHello()` reads `viewOnlyMode`. That error is
+the crash of an OLDER `client-agent.js` (from before v6, when `onHello()` read a variable that only existed inside `connect()`).
+It happens when the Windows app is an old installed / `dist` build, or when the agent folder was not copied. From now on:
+- the agent sends `protocol: 9` with its hello; the server refuses older agents with "This ScopeDesk desktop app is out of date..."
+  (`server/remote-control.js`), so an old app shows that sentence instead of crashing;
+- the desktop app checks the agent it forks; a mismatched agent is reported and Start is refused with the fix (`desktop/agent-runner.js`);
+- the build stamp is now `2026-10-29-v9` (bottom-right of the page and `/api/health`), so you can see what Railway serves.
+
+| Change | Files |
+|---|---|
+| Screen / window picker in the share dialog (desktop app): tiles with thumbnails for every screen and window (ScopeDesk itself excluded). Screen = remote control; one window = watch only (input off on the agent, both sides told why). "Change what I share" swaps it live | `desktop/main.js`, `desktop/preload.js`, `desktop/display-media-handler.js`, `public/script.js`, `public/index.html`, `public/style.css`, `agent/input-injector.js`, `agent/client-agent.js` |
+| In a normal browser the native picker offers Entire screen / Window / Tab (window and tab are watch-only) | `public/webrtc.js` |
+| Server relay starts after 5 s without a direct link (was 12-16 s), and at once when ICE fails | `public/webrtc.js` |
+| Codec order VP8 > H.264 > VP9 > AV1, 30 fps cap, 3 Mbit/s, keep resolution (sharp text) | `public/webrtc.js` |
+
+The real cause of "Still connecting..." across networks is that no TURN relay is configured (`/api/health` shows `"relay":false`):
+direct WebRTC cannot pass most home/mobile NATs. The server relay now shows the screen within ~5 s; TURN gives full speed (RAILWAY.md).
+
+---
+
+# Update 10: every OS combination, any network, AnyDesk-style tools inside the approved scope
+
+| Need | What was added | Files |
+|---|---|---|
+| **Windows <-> Mac <-> Linux keyboard** | Each key carries the vendor's OS. Windows/Linux vendor on a Mac: Ctrl is pressed as Cmd (Ctrl+C copies). Mac vendor on Windows/Linux: Cmd+C/V/X/Z/A/S/F... become Ctrl+letter. Blocked everywhere: Alt+Tab, Alt+F4, Alt+Esc, Ctrl+Esc, Ctrl+Shift+Esc, Win key, Cmd+Tab, Cmd+Space, Cmd+Q, Force Quit, Ctrl+Cmd+Q, Mac Ctrl+arrows | `agent/input-injector.js`, `public/remote-input.js`, `agent/validate.js`, `server/remote-control.js` |
+| **Any keyboard layout** | Printable characters (é, @, €, Hindi, IME input) are typed as characters, not as key positions | same |
+| **Copy/paste** | Ctrl/Cmd+V on the vendor's side pastes the vendor's copied text inside the approved app (up to 4000 characters). Vendor -> Client only: the Client's clipboard is never sent to the vendor | same |
+| **Different networks without TURN** | If the direct WebRTC link is not up after ~12 s, the vendor's page asks for a **server relay**: the Client's page sends ~5 JPEG pictures/second (max 1280 px wide) through the ScopeDesk server. Input already uses the server relay. WebRTC keeps retrying and takes over when it connects. TURN (RAILWAY.md) is still recommended for full speed | `public/webrtc.js`, `server.js` |
+| **Several monitors** | The share dialog lists the Client's screens; "Switch screen" in the live bar swaps the shared monitor without reconnecting. The agent maps the pointer onto the chosen display (Windows scaling handled) | `desktop/main.js`, `desktop/preload.js`, `desktop/display-media-handler.js`, `desktop/agent-runner.js`, `public/script.js`, `public/index.html` |
+| **File transfer** | Vendor workspace: "Send file" button or drag-and-drop. Saved ONLY in a folder the task approved, max 25 MB, programs/scripts refused, never overwrites, both screens told, audit-logged. No download direction | `agent/file-receiver.js`, `server/remote-control.js`, `public/remote-viewport.*` |
+| **Linux** | Wayland sessions are detected and the Client is told exactly how to switch to Xorg (control needs X11) instead of failing silently | `desktop/main.js` |
+| **Scope warnings** | The task form warns when a web browser is allowed (it opens every website and local file) | `public/script.js`, `public/index.html` |
+
+Tests: root 166/166, desktop 36/36, agent 48/49 (the one failure needs the real `active-win` package, unavailable in the test sandbox,
+and fails the same way on the original files). New: `agent/test/cross-os-keys.test.js`, `agent/test/file-receiver.test.js`,
+`test/remote-features.test.js`, `desktop/test/multi-monitor.test.js`, more cases in `agent/test/remote-control-e2e.test.js`.
+
+---
+
+# Update 9: remote control really controls the Client's PC, the Start/Stop button no longer flips, Stop revokes access on the server
+
+## Root causes (found in the code, reproduced by tests against the uploaded files)
+1. **The host agent received events for OTHER tasks.** `server.js` registered the agent's socket under the Client's user id, so
+   `emitToUser(client, 'session-ended' | 'control-halt' | 'control-resume')` for ANY ticket of that Client reached it, and
+   `agent/client-agent.js` ignored the `taskId`. When another ticket expired (the 15 s sweep) or was terminated, the running agent shut
+   down: remote control died and the button went back to "Start remote control" without a click. A `control-resume` for another task
+   could even unlock a locked agent. Reproduced: event for task 99 -> agent of task 7 `running > stopped ("Session ended.")`.
+2. **Approved apps never matched the real process.** The task form stores clean names ("Word", "File Manager", "Chrome", "Excel"); the
+   foreground monitor compared them directly with what the OS reports ("Microsoft Word", WINWORD.EXE, Finder, "Google Chrome"). The
+   monitor stayed in "waiting" for ever and every vendor click/key was dropped silently. `agent/policy.js` now expands each approved name
+   through `agent/app-catalog.js` (macOS names added). Unknown names still match only themselves.
+3. **A host-agent reconnect froze the fast path.** After any agent socket blip the desktop app moved the session back to `connected`
+   (input is only forwarded while `running`), and the agent never re-announced its state, so both screens stayed on "waiting".
+4. **No record of the Client's decision on the server.** "Stop remote control" only stopped the local agent: relayed input was still
+   accepted by the server and the vendor's page kept sending; nothing was audited.
+
+## Changes
+| File | Change |
+|---|---|
+| `server.js` | agent sockets are no longer registered as the Client user; `onControlChange` writes `REMOTE_CONTROL_STARTED/STOPPED` with the reason to the audit log |
+| `server/remote-control.js` | `remote-control` {start, stop} from the owning Client of an active task (idempotent); after Stop every relayed input is refused, the agent gets `control-halt {reason:'revoked'}`, a stale agent cannot reconnect, both screens get `control-state`; privacy-safe stage logs (`[RC] task N: ...`, no input content) |
+| `agent/client-agent.js` | ignores events for other tasks; `revoked` ends the agent; no input once ending; on reconnect re-announces its state (or exits if the server refuses); forwards monitor diagnostics |
+| `agent/monitor.js` | reports WHY input is paused: which app is in front (name only) or why the foreground window cannot be read (macOS permissions) |
+| `agent/policy.js`, `agent/app-catalog.js` | approved app names expanded to real process names; only Explorer/Finder count as folder-checkable file managers |
+| `desktop/agent-runner.js` | a reconnect never downgrades `running`; `diag` fills the detail line; `armed` clears it |
+| `public/webrtc.js` | `control-state` (stopped) blocks input on every path and tells the vendor the bridge is not ready; desktop status sequence check; a slow `agent-status` reply cannot overwrite a newer `agent-state` |
+| `public/script.js` | Start asks the server first (and shows its refusal), Stop stops the local agent then records it on the server; the button follows only the status of THIS task; the waiting/stop reason is shown; the duplicate vendor capture (`ScopeDeskHub.startVendorCapture`, sending to channels nobody read) is removed; approval dialog lists task, approved apps and duration |
+| `public/index.html`, `public/remote-viewport.html`, `public/remote-viewport.js` | approval details; "client stopped remote control" badge; cache-busting `?v=` |
+| `package.json` | `npm test` also runs `test/*.test.js` |
+| tests | `test/remote-control-lifecycle.test.js` (11), `agent/test/remote-control-e2e.test.js` (12, real forked agent + real runner), `desktop/test/agent-reconnect.test.js` (2) |
+
+Tests: root 160/160, desktop 34/34, agent 37/38. The one agent failure (`monitor.start() finds the active-win function`) needs the real
+`active-win` package, which could not be downloaded in the test sandbox; it fails the same way on the uploaded files.
+Not tested here: a real Mac/Windows desktop, real nut-js/active-win, a real browser WebRTC connection, the real Express/Socket.IO server.
+
+---
+
 # Update 6: cross-OS shortcuts, folder auditing for Explorer / Finder, macOS lock chain, TURN aliases
 
 | File | Change |
@@ -217,3 +297,29 @@ and the new UI in headless Chrome with the missing front-end scripts stubbed. **
 - Desktop app: Help > Save diagnostics report writes ScopeDesk-diagnostics.txt on the Desktop (agent files/modules present, agent state,
   last log lines, last screen-share refusal; tokens and keys removed). `diagnostics.js` is in the installer's file list and a test now
   fails the build if any file main.js requires is missing from that list.
+
+## UPDATE 11: host agent crash on session start
+
+- `agent/client-agent.js`: "The host agent stopped: viewOnly is not defined". `onHello()` had been moved out of `connect()` but still read
+  `viewOnly`, so the agent crashed the moment the server accepted it and the Client saw "Host agent: not running". The flag is now kept in a
+  module variable (`viewOnlyMode`).
+- `agent/test/agent-session-start.test.js` + `helpers/agent-harness.js`: starts the real agent with fake network/monitor/injector and fails
+  on any crash during session start (verified to fail on the old code with the exact error above).
+
+## UPDATE 12: remote control lifecycle, Start/Stop flipping, silent failures
+
+- Start/Stop flipping: `syncClientLive()` (runs on every task-list refresh) called `startDesktopAgent(false)`, and ticket creation did too. Each call
+  re-initialised the agent, and every restart/crash/session end changed the button. Remote control now starts only on the Client's explicit action
+  (pressing "Share my screen" in the approval dialog, or "Start remote control"); the desktop app ignores any start that is not `manual: true`.
+- `desktop/agent-runner.js`: one authoritative status with a sequence number, no announcement when nothing changed, idempotent `init()`,
+  no restart after Stop / session end / crash (`blocked`), a standby event no longer wipes an error, input is accepted only while the agent
+  is running, new `endTask()` and `fail()`.
+- `public/desktop-bridge.js`: ignores status events older than the newest one seen; `endTask()`.
+- `public/webrtc.js`: the host bridge is "ready" only when the agent is running AND reports it can apply input; the vendor gets an explicit input
+  path (`channel` / `relay` / `none`); events fall back to the relay when the channel closes or throws; no duplicate socket handlers; changes
+  are announced only when a value really changes; privacy-safe stage diagnostics.
+- Agent: reports `{type:'input', ready, reason}`; reports `view-only` (never `armed`) when it cannot apply input; macOS Accessibility is checked in
+  `desktop/main.js` and shown as the reason. `server/remote-control.js` accepts `view-only` and tells the vendor (`input-undeliverable`) when no
+  agent can receive input.
+- Tests: `desktop/test/agent-lifecycle.test.js`, `test/remote-control-page.test.js`, more cases in `test/session-enforcement.test.js` and
+  `agent/test/agent-session-start.test.js`. Manual test guide: REMOTE-CONTROL-TEST.md.

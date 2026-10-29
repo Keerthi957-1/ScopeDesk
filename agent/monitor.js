@@ -19,8 +19,10 @@
 const { normalize } = require('./config');
 
 class ForegroundMonitor {
-  constructor({ policy, probe, pollMs, strikes, attributionMs, onViolation, onState, log, debug }) {
+  constructor({ policy, probe, pollMs, strikes, attributionMs, onViolation, onState, onDiag, log, debug }) {
     this.policy = policy; this.probe = probe;
+    this.onDiag = typeof onDiag === 'function' ? onDiag : () => {};
+    this.lastDiag = null;
     this.pollMs = pollMs; this.strikes = strikes; this.attributionMs = attributionMs;
     this.onViolation = onViolation; this.onState = onState; this.log = log; this.debug = !!debug;
     this.state = 'waiting';
@@ -47,7 +49,19 @@ class ForegroundMonitor {
     const fn = [mod.activeWindow, mod.default && mod.default.activeWindow, mod.default].find((f) => typeof f === 'function');
     if (!fn) throw new Error('The active-win package loaded but has no activeWindow() function (installed version is not supported).');
     this.activeWindow = fn;
-    this.timer = setInterval(() => this.poll().catch((e) => this.log('warn', 'Could not read the active window: ' + e.message)), this.pollMs);
+    this.timer = setInterval(() => this.poll().catch((e) => this.readFailed(e)), this.pollMs);
+  }
+
+  // Reported once per change (never every poll). App names only: never window titles, typed text or file contents.
+  diag(text) {
+    if (text === this.lastDiag) return;
+    this.lastDiag = text;
+    if (text) this.onDiag(text);
+  }
+  readFailed(e) {
+    const msg = String((e && e.message) || e || 'unknown error').split('\n')[0].slice(0, 160);
+    const mac = process.platform === 'darwin' ? ' On macOS, allow ScopeDesk under System Settings > Privacy & Security > Accessibility AND Screen Recording, then reopen ScopeDesk.' : '';
+    this.diag(`cannot read which app is in front (${msg}). Vendor input stays paused.${mac}`);
   }
   stop() { clearInterval(this.timer); this.timer = null; if (this.probe) this.probe.close(); }
 
@@ -94,7 +108,14 @@ class ForegroundMonitor {
     }
 
     if (this.state === 'waiting') {
-      if (result.ok) { this.log('info', 'An in-scope window is in front. Enforcement is ON.'); this.setState('armed'); }
+      if (result.ok) { this.log('info', 'An in-scope window is in front. Enforcement is ON.'); this.diag(''); this.setState('armed'); }
+      else {
+        const front = (win && win.owner && win.owner.name) || result.name || 'nothing';
+        const name = String(front).slice(0, 60);
+        this.diag(result.kind === 'path'
+          ? `waiting: "${name}" is in front but does not show an approved folder. Open an approved folder.`
+          : `waiting: "${name}" is in front, which is not an approved app (${(this.policy.appList || []).join(', ')}). Bring an approved app to the front.`);
+      }
       return;
     }
     if (result.ok || result.soft) { this.bad = 0; return; }

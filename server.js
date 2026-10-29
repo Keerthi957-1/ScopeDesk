@@ -53,7 +53,7 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
-const BUILD = '2026-10-24-b'; // shown on the page so you can tell which version you are looking at
+const BUILD = '2026-10-29-v9'; // shown on the page so you can tell which version you are looking at
 const APP_URL = (process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`)).replace(/\/+$/, '');
 if (IS_PRODUCTION) app.set('trust proxy', 1); // behind Railway's proxy: real client IPs for rate limits
 
@@ -316,7 +316,12 @@ const timers = createSessionTimers({
     actorId: null, finalStatus: 'expired', sessionStatus: 'expired'
   })
 });
-const remoteControl = createRemoteControl({ io, db, authorizeRtc, emitToTask, verifyToken, timers, onBreach: (b) => handleVendorBreach(b) });
+const remoteControl = createRemoteControl({
+  io, db, authorizeRtc, emitToTask, verifyToken, timers, onBreach: (b) => handleVendorBreach(b),
+  // The Client pressed Start / Stop remote control: recorded with the real reason (audit log), never with input content
+  onControlChange: ({ taskId, userId, active, reason }) => logAudit(userId, active ? 'REMOTE_CONTROL_STARTED' : 'REMOTE_CONTROL_STOPPED', { taskId, reason }),
+  onAudit: (userId, action, details) => logAudit(userId, action, details)
+});
 
 // Set AUTO_CUT_STREAM=false in .env to keep the stream alive until the Client presses "Terminate Session Now".
 // Default: a violation locks the vendor out for good and the Client can only terminate. Set ALLOW_RESUME_AFTER_VIOLATION=true to let the Client resume.
@@ -436,9 +441,13 @@ async function deliverPendingRequests(user, socket) {
 
 io.on('connection', (socket) => {
   const user = socket.data.user;
-  addSocket(user.userId, socket.id);
 
-  // HOST AGENT sockets get a tiny, fixed set of abilities and nothing else
+  // HOST AGENT sockets get a tiny, fixed set of abilities and nothing else.
+  // They are deliberately NOT registered under the client's user id: emitToUser(client, ...) is meant for the Client's browser
+  // tabs and carries events for EVERY task of that client ('session-ended', 'control-halt', 'control-resume'). Registering the
+  // agent there made a ticket that expired or was terminated elsewhere shut down the agent of the running task (the
+  // Start/Stop remote control button then flipped back by itself). The agent receives only its own task's events, via
+  // remoteControl.sendToAgents().
   if (socket.data.agent) {
     remoteControl.registerAgent(socket);
     const lastHost = new Map();
@@ -451,9 +460,9 @@ io.on('connection', (socket) => {
         reply(await handleHostViolation(user, payload, socket));
       } catch (err) { console.error('[WS] host-violation error:', err.message); reply({ ok: false, error: 'Server error.' }); }
     });
-    socket.on('disconnect', () => removeSocket(user.userId, socket.id));
     return;
   }
+  addSocket(user.userId, socket.id);
   remoteControl.registerBrowser(socket, user);
 
   const respond = (ack, body) => { if (typeof ack === 'function') ack(body); };
@@ -483,10 +492,30 @@ io.on('connection', (socket) => {
   socket.on('webrtc-signal', (msg) => {
     const taskId = Number(msg && msg.taskId);
     if (!socket.data.rtc.has(taskId)) return; // must have joined this task's room first
-    if (!['offer', 'answer', 'candidate', 'restart'].includes(msg.type)) return;
+    if (!['offer', 'answer', 'candidate', 'restart', 'frames'].includes(msg.type)) return;
     if (JSON.stringify(msg).length > 20000) return;
     const { type, offer, answer, candidate } = msg;
-    socket.to(rtcRoom(taskId)).emit('webrtc-signal', { taskId, type, offer, answer, candidate });
+    const on = type === 'frames' ? msg.on === true : undefined;          // vendor: "send the screen through the server" on/off
+    socket.to(rtcRoom(taskId)).emit('webrtc-signal', { taskId, type, offer, answer, candidate, on });
+  });
+
+  // SCREEN RELAY FALLBACK. When the two computers cannot reach each other (different networks, strict firewalls, no TURN relay set up)
+  // the Client's page sends compressed screen pictures here and they are passed to the task's room. Slower than WebRTC (a few frames
+  // per second) but it always works where the ScopeDesk server is reachable. Only the task's own Client may send; nothing after a halt.
+  let frameWindow = 0, frameCount = 0;
+  socket.on('screen-frame', (f, ack) => {
+    const reply = (b) => { if (typeof ack === 'function') ack(b); };
+    const taskId = Number(f && f.taskId);
+    if (user.role !== 'client' || !socket.data.rtc.has(taskId) || remoteControl.isHalted(taskId)) return reply({ ok: false });
+    const data = f.data;
+    const len = data && (data.byteLength !== undefined ? data.byteLength : data.length);
+    const w = Number(f.w), h = Number(f.h);
+    if (!(len > 0) || len > 700 * 1024 || !Number.isInteger(w) || !Number.isInteger(h) || w < 16 || h < 16 || w > 4096 || h > 4096) return reply({ ok: false });
+    const now = Date.now();
+    if (now - frameWindow > 1000) { frameWindow = now; frameCount = 0; }
+    if (++frameCount > 15) return reply({ ok: false, error: 'rate' });
+    socket.to(rtcRoom(taskId)).volatile.emit('screen-frame', { taskId, w, h, data });
+    reply({ ok: true });
   });
 
   socket.on('webrtc-leave', (payload) => {

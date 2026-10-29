@@ -83,18 +83,18 @@ function fallbackSource(primaryDisplayId) {
 }
 
 /** Picks the primary display's source, else the first screen source. Returns null when there is none. */
-function pickScreenSource(sources, primaryDisplayId) {
+function pickScreenSource(sources, primaryDisplayId, exact = false) {
   const screens = (sources || []).filter((s) => s && typeof s.id === 'string' && s.id.startsWith('screen:'));
   if (!screens.length) return null;
   const primary = screens.find((s) => String(s.display_id) === String(primaryDisplayId));
-  return primary || screens[0];
+  return primary || (exact ? null : screens[0]);
 }
 
 /**
  * Builds the request handler (exported separately so it can be tested without Electron).
  * @returns {(request:object, callback:Function) => Promise<void>}
  */
-function createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrigins = [], log = () => {}, onDeny = () => {}, requireGesture = false, retryPauseMs = 150 }) {
+function createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrigins = [], log = () => {}, onDeny = () => {}, requireGesture = false, retryPauseMs = 150, preferredDisplayId = () => null, preferredWindowId = () => null, onGrant = () => {} }) {
   const allowed = new Set(['file://', ...allowedOrigins.map((o) => originOf(o) || o)]);
   return async function handler(request, callback) {
     const deny = (why) => {
@@ -110,14 +110,29 @@ function createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrig
 
       let primaryId = null;
       try { primaryId = screen.getPrimaryDisplay().id; } catch (_) { /* fall back to the first screen */ }
+      // The Client picked ONE WINDOW in ScopeDesk's picker: offer exactly that window (view-only for the vendor, see agent)
+      let windowId = null;
+      try { windowId = preferredWindowId(); } catch (_) { /* no window chosen */ }
+      if (windowId) {
+        let wins = [];
+        try { wins = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false }); } catch (err) { return deny('could not list windows: ' + describeError(err)); }
+        const w = (wins || []).find((s) => s && s.id === windowId);
+        if (!w) return deny('the chosen window was closed; pick it again');
+        try { onGrant({ windowId: w.id }); } catch (_) { /* reporting only */ }
+        return callback({ video: w });
+      }
+      let wanted = null;
+      try { wanted = preferredDisplayId(); } catch (_) { /* primary */ }
       const found = await getScreenSources(desktopCapturer, log, retryPauseMs);
-      let source = pickScreenSource(found.sources, primaryId);
+      // The display the Client chose in the share dialog (multi-monitor), else the primary one
+      let source = (wanted != null && pickScreenSource(found.sources, wanted, true)) || pickScreenSource(found.sources, primaryId);
       if (!source && found.threw) {            // the capturer itself failed (not "there is no screen"): offer the primary display directly
         source = fallbackSource(primaryId);
         if (source) log('[display-media] using the primary display directly (' + (found.error || 'no source') + ')');
       }
       if (!source) return deny('no screen source: ' + (found.error || 'none found') + ' (on macOS check System Settings > Privacy & Security > Screen Recording)');
 
+      try { onGrant({ displayId: source.display_id != null ? String(source.display_id) : (primaryId != null ? String(primaryId) : '') }); } catch (_) { /* reporting only */ }
       callback({ video: source });                       // video only: audio is never shared
     } catch (err) {
       deny('error: ' + describeError(err));
@@ -126,12 +141,12 @@ function createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrig
 }
 
 /** Registers the handler on an Electron session. Returns false (and logs) on Electron versions without the API. */
-function installDisplayMediaHandler({ session, desktopCapturer, screen, allowedOrigins, log = () => {}, onDeny, requireGesture }) {
+function installDisplayMediaHandler({ session, desktopCapturer, screen, allowedOrigins, log = () => {}, onDeny, requireGesture, preferredDisplayId, preferredWindowId, onGrant }) {
   if (!session || typeof session.setDisplayMediaRequestHandler !== 'function') {
     log('[display-media] this Electron version has no setDisplayMediaRequestHandler; screen sharing keeps its default behaviour');
     return false;
   }
-  session.setDisplayMediaRequestHandler(createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrigins, log, onDeny, requireGesture }), { useSystemPicker: false });
+  session.setDisplayMediaRequestHandler(createDisplayMediaRequestHandler({ desktopCapturer, screen, allowedOrigins, log, onDeny, requireGesture, preferredDisplayId, preferredWindowId, onGrant }), { useSystemPicker: false });
   return true;
 }
 

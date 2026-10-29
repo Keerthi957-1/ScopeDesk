@@ -8,8 +8,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { normalize: normalizeName } = require('./config');
+const catalog = require('./app-catalog');
 
 const DEFAULT_FILE_MANAGERS = ['explorer.exe', 'finder'];
+// The file managers agent/path-probe.js can read the folder of (Explorer on Windows, Finder on macOS)
+const VERIFIABLE_FILE_MANAGERS = new Set(['explorer', 'fileexplorer', 'finder']);
 
 // Windows 10/11 Calculator is an app-store app: "calc.exe" is only a launcher and the window belongs to CalculatorApp.exe.
 // Names in the same group are treated as one app. (Deliberately NOT done for ApplicationFrameHost: that would allow every store app.)
@@ -82,16 +85,35 @@ function loadPolicy({ taskType, targetProcess, taskId, extra, sessionConfigFile,
   return buildPolicy(name, merged, targetProcess);
 }
 
+// The task form stores CLEAN app names ("File Manager", "Word", "Chrome", "Excel"), but the foreground monitor sees PROCESS names
+// ("explorer"/"Finder", "WINWORD.EXE", "Google Chrome", "Microsoft Excel"). Comparing the two directly never matched, so for most
+// approved apps the monitor stayed in "waiting" forever and every vendor click/key was dropped without a word. Each approved name
+// is now expanded to the process names the shared catalog (agent/app-catalog.js) lists for it. Unknown names still match only
+// themselves, so nothing beyond the approved apps is ever allowed.
+function expandApp(name) {
+  const keys = new Set([normalizeName(name)]);
+  try {
+    catalog.processKeysFor(name).forEach((k) => {
+      // File managers whose folder this agent cannot verify (Nautilus, Dolphin, third-party "Files"...) are never added by expansion
+      if (catalog.isFileManager(k) && !VERIFIABLE_FILE_MANAGERS.has(normalizeName(k))) return;
+      keys.add(normalizeName(k));
+    });
+  } catch (_) { /* unusable name: itself only */ }
+  keys.delete('');
+  return [...keys];
+}
+
 // Accepts both spellings: allowedApps/allowedPaths (policies.json) and allowedProcesses/allowedDirectories (session config)
 function buildPolicy(name, def, targetProcess) {
   const apps = [targetProcess, ...((def && (def.allowedApps || def.allowedProcesses)) || [])].filter(Boolean);
   const allowedPaths = ((def && (def.allowedPaths || def.allowedDirectories)) || []).map(String);
+  const fileManagers = new Set(((def && def.fileManagers) || DEFAULT_FILE_MANAGERS).map(normalizeName));
   return {
     name,
-    apps: withAliases(apps.map(normalizeName)),
+    apps: withAliases(apps.flatMap(expandApp)),
     appList: apps,
     allowedPaths,
-    fileManagers: new Set(((def && def.fileManagers) || DEFAULT_FILE_MANAGERS).map(normalizeName)),
+    fileManagers,
     pathAllowed: (folder) => allowedPaths.some((a) => isInside(folder, a))
   };
 }

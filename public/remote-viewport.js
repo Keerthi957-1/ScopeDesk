@@ -81,8 +81,9 @@
     const stuck = (v.conn === 'connecting' && v.connectSlow) || v.conn === 'lost';
     if (stuck && v.relay === false) return { msg: ['Cannot connect across networks', 'The two computers are on different networks and the ScopeDesk server has no relay (TURN) set up yet, so the screen cannot reach you. Ask the administrator to follow the "Relay" step in RAILWAY.md.'], badge: 'No relay server', warn: true };
     if (v.conn === 'connecting' && v.connectSlow) return { msg: ['Still connecting...', 'This is taking longer than usual. Both computers need internet access, and a strict firewall can block the link. Retrying automatically.'], badge: 'Connecting slowly...', warn: true };
+    if (v.conn === 'live' && v.stopped) return { badge: 'Live view only. The client stopped remote control', warn: true };
     if (v.conn === 'live') {
-      const via = v.path === 'local' ? ' (same network)' : v.path === 'relay' ? ' (via relay)' : '';
+      const via = v.path === 'local' ? ' (same network)' : v.path === 'relay' ? ' (via relay)' : v.path === 'server' ? ' (via ScopeDesk server, reduced picture rate)' : '';
       if (v.agent === 'armed') return { badge: 'Live. Remote control active' + via };
       if (v.agent === 'waiting') return { badge: `Live. Waiting for the client to open ${proc}` };
       if (v.agent === 'locked') return { badge: 'Live. Control locked', warn: true };
@@ -120,11 +121,12 @@
     const stage = $('stage');
     const live = view.conn === 'live' || view.conn === 'lost' || (!!d.soft && !!view.everLive);
     stage.classList.toggle('live', live);
-    stage.classList.toggle('control-on', view.conn === 'live' && view.agent === 'armed' && !view.halted);
+    stage.classList.toggle('control-on', view.conn === 'live' && view.agent === 'armed' && !view.halted && !view.stopped);
     overlay(d.msg ? d.msg[0] : null, d.msg ? d.msg[1] : '');
     const s = $('barStatus');
     s.textContent = d.badge; s.classList.toggle('warn', !!d.warn); s.classList.toggle('ok', !d.warn);
     $('btnShot').disabled = !shotAllowed(view);
+    $('btnSendFile').disabled = !(view.conn === 'live' && view.agent === 'armed' && !view.halted && !view.stopped);
     netPill(d.soft ? d.badge : null);
     try { if (window.opener && !window.opener.closed) window.opener.postMessage({ t: 'scopedesk-viewport-state', badge: d.badge, warn: !!d.warn, conn: view.conn }, location.origin); } catch (_) { /* dashboard closed */ }
     if (live && !d.msg) { const vid = $('video'); vid.play().catch(() => {}); stage.focus(); }
@@ -176,6 +178,28 @@
     }, 'image/png');
   }
   $('btnShot').addEventListener('click', takeScreenshot);
+
+  // ---------- send a file to the client's PC (only into a folder the task approved; programs and scripts are refused) ----------
+  async function sendOneFile(file) {
+    if (!file) return;
+    if ($('btnSendFile').disabled) { netPill('Files can be sent only while remote control is active.'); setTimeout(() => netPill(null), 4000); return; }
+    try {
+      netPill(`Sending ${file.name}... 0%`);
+      await ScopeDeskRTC.sendFile(file, '', (p) => netPill(`Sending ${file.name}... ${Math.round(p * 100)}%`));
+      netPill(`Sent ${file.name}. Waiting for the client's computer...`);
+    } catch (e) {
+      netPill(`Not sent: ${e.message}`);
+      setTimeout(() => netPill(null), 6000);
+    }
+  }
+  ScopeDeskRTC.onFileResult((r) => {
+    netPill(r.ok ? `Saved on the client's computer: ${r.name} (in ${r.folder})` : `The client's computer refused the file: ${r.error}`);
+    setTimeout(() => netPill(null), 6000);
+  });
+  $('btnSendFile').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; sendOneFile(f); });
+  $('stage').addEventListener('dragover', (e) => { e.preventDefault(); });
+  $('stage').addEventListener('drop', (e) => { e.preventDefault(); const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; sendOneFile(f); });
 
   $('btnFull').addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});

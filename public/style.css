@@ -785,3 +785,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .link-btn:disabled { opacity: .55; cursor: not-allowed; text-decoration: none; }
 .mail-advanced { margin: 4px 0 14px; font-size: 13px; color: var(--text-muted); }
 .mail-advanced summary { cursor: pointer; margin-bottom: 8px; }
+
+/* Screen / window picker in the share dialog (desktop app) */
+.share-picker { margin-top: 12px; max-height: 320px; overflow-y: auto; }
+.share-picker h4 { margin: 10px 0 6px; font-size: 13px; color: #5b6b75; font-weight: 600; }
+.share-picker .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.share-picker button.tile { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 2px solid #d5dde2; border-radius: 8px; background: #fff; cursor: pointer; text-align: left; font: inherit; font-size: 12px; color: #1d2b33; }
+.share-picker button.tile img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #0b1a24; border-radius: 4px; }
+.share-picker button.tile[aria-pressed="true"] { border-color: #12a37f; box-shadow: 0 0 0 2px rgba(18,163,127,.25); }
+.share-picker button.tile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-picker-note { font-size: 12px; color: #8a5a00; margin-top: 8px; min-height: 1em; }

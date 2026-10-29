@@ -226,6 +226,7 @@
                 <div class="live-bar-actions">
                     <button type="button" class="btn-primary" id="btnShareScreen">Share my screen</button>
                     <button type="button" class="btn-ghost" id="btnPairAgent">Start remote control</button>
+                    <button type="button" class="btn-ghost hidden" id="btnSwitchScreen" title="Share a different screen or window">Change what I share</button>
                     <button type="button" class="btn-ghost hidden" id="btnEnableAlerts">Enable alerts</button>
                     <button type="button" class="btn-danger btn-end-session" id="btnLiveTerminate">Terminate Connection</button>
                 </div>
@@ -452,6 +453,7 @@
                             </div>
                         </div>
                         <div id="appsChips" class="app-chips" aria-live="polite"></div>
+                        <p id="appsScopeWarning" class="auth-error hidden" role="note" style="margin-top:8px"></p>
                         <small>Anything not ticked here is blocked. If the vendor tries to start another app or open another folder, the session ends and this computer is locked.</small>
                     </div>
                     <div class="form-group">
@@ -555,7 +557,10 @@
             <div class="modal-header"><h3 id="shareTitle">Your vendor is ready to connect</h3></div>
             <div class="modal-body">
                 <p><b id="shareVendor">The vendor</b> accepted your task and will see your <b>entire screen</b> and can control your mouse and keyboard until the timer ends or you terminate the session.</p>
-                <p style="margin-top:10px">Before you start: open <b id="shareProcess">the approved app</b> and keep the ScopeDesk desktop app open: remote control starts by itself. <span id="sharePickerHelp">Choose <b>Entire screen</b> in the browser's picker, <b>click the screen preview</b> so it is highlighted, then press <b>Share</b> (the button stays grey until you pick one).</span><span id="shareDesktopHelp" hidden>Press <b>Share my screen</b>: the app shares your main screen directly, there is nothing to pick.</span></p>
+                <p style="margin-top:10px">Task: <b id="shareTask">this task</b><br>Approved apps: <b id="shareApps">the approved app</b><br>Duration: <b id="shareDuration">the approved window</b></p>
+                <p style="margin-top:10px">Before you start: open <b id="shareProcess">the approved app</b> and keep the ScopeDesk desktop app open. Pressing the green button below approves this vendor, this task and the time window, and starts remote control. <span id="sharePickerHelp">The browser asks what to share: <b>Entire screen</b> lets the vendor control this computer; a <b>Window</b> or a <b>Tab</b> can only be watched.</span><span id="shareDesktopHelp" hidden>Choose what to share below. A <b>screen</b> lets the vendor control this computer; a single <b>window</b> can only be watched.</span></p>
+                <div id="sharePicker" class="share-picker" hidden aria-label="What to share"></div>
+                <p id="sharePickerNote" class="share-picker-note" role="status"></p>
                 <div id="shareError" class="auth-error hidden" role="alert" style="margin-top:12px"></div>
                 <div class="violation-actions" style="margin-top:18px">
                     <button type="button" class="btn-primary" id="btnConfirmShare">Share my screen</button>
@@ -570,10 +575,10 @@
     <script src="remote-input-channel.js?v=20261025a"></script>
     <script src="rtc-channel-hub.js?v=20261025a"></script>
     <script src="screen-share.js?v=20261029a"></script>
-    <script src="remote-input.js?v=20261024gb"></script>
-    <script src="webrtc.js?v=20261029a"></script>
-    <script src="desktop-bridge.js?v=20261024gb"></script>
-    <script src="script.js?v=20261029a"></script>
-    <script src="build-check.js?v=20261024gb"></script>
+    <script src="remote-input.js?v=20261031a"></script>
+    <script src="webrtc.js?v=20261031a"></script>
+    <script src="desktop-bridge.js?v=20261030a"></script>
+    <script src="script.js?v=20261031a"></script>
+    <script src="build-check.js?v=20261029v9"></script>
 </body>
 </html>

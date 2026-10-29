@@ -1,0 +1,39 @@
+{
+  "name": "scopedesk",
+  "version": "3.2.0",
+  "description": "ScopeDesk: Secure Task-Bounded Remote Support Desktop Application",
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'Skipping desktop asset compilation on cloud container layer'",
+    "dev": "node --watch server.js",
+    "setup-email": "node setup-email.js",
+    "find-alerts": "node tools/find-alerts.js",
+    "test": "node --test \"server/test/*.test.js\" \"test/*.test.js\"",
+    "test:all": "npm test && npm --prefix desktop test && npm --prefix agent test",
+    "desktop": "npm --prefix desktop start",
+    "desktop:build": "npm --prefix desktop install --no-audit --no-fund && npm --prefix desktop run build",
+    "desktop:build:win": "npm --prefix desktop install --no-audit --no-fund && npm --prefix desktop run build:win",
+    "desktop:build:mac": "npm --prefix desktop install --no-audit --no-fund && npm --prefix desktop run build:mac"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "keywords": [
+    "remote-support",
+    "task-bounded",
+    "vendor-management",
+    "desktop-app"
+  ],
+  "author": "ScopeDesk Team",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^7.0.13",
+    "socket.io": "^4.8.1"
+  },
+  "main": "server.js"
+}

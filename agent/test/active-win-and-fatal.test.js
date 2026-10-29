@@ -35,6 +35,7 @@ test('a crashing agent process reports its own message through IPC instead of dy
     .replace("require('./input-injector')", `require(${JSON.stringify(path.join(__dirname, '..', 'input-injector'))})`)
     .replace("require('./policy')", `require(${JSON.stringify(path.join(__dirname, '..', 'policy'))})`)
     .replace("require('./path-probe')", `require(${JSON.stringify(path.join(__dirname, '..', 'path-probe'))})`)
+    .replace("require('./file-receiver')", `require(${JSON.stringify(path.join(__dirname, '..', 'file-receiver'))})`)
     + "\nPromise.reject(new Error('active-win binding could not be loaded'));\n";
   const file = path.join(dir, 'agent.js');
   fs.writeFileSync(file, src);

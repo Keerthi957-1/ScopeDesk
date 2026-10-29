@@ -15,6 +15,12 @@ const { ForegroundMonitor } = require('./monitor');
 const { InputInjector } = require('./input-injector');
 const { loadPolicy } = require('./policy');
 const { createPathProbe } = require('./path-probe');
+const { createFileReceiver } = require('./file-receiver');
+const MAX_FRAME = 20000;
+// Version of the agent <-> server / desktop-app protocol. The server refuses older agents with a clear message, and the desktop app
+// refuses an agent that does not match it, instead of a stale copy crashing half-way through a session.
+const AGENT_PROTOCOL = 9;
+const WINDOW_ONLY_REASON = 'You are sharing one window, so the vendor can watch but not control. Share a whole screen to allow control.';   // one input frame from the desktop app (a pasted text can be up to 4000 characters)
 
 const stamp = () => new Date().toLocaleTimeString();
 const hasParent = typeof process.send === 'function';
@@ -38,14 +44,16 @@ if (!cfg.SERVER_URL) {
   process.exit(1);
 }
 
+let receiver = null, display = null;
 let socket = null, monitor = null, injector = null, taskId = null, expiryTimer = null, started = false, ending = false;
+let viewOnlyMode = false, blockReason = '', policyName = '';   // set by connect(), read later by onHello() (they are separate functions, so it cannot be a parameter)
 
 async function shutdown(code, why) {
   if (ending) return;
   ending = true;
   log('info', why);
   clearTimeout(expiryTimer);
-  try { if (injector) await injector.releaseAll(); if (monitor) monitor.stop(); if (socket) socket.close(); } catch (_) { /* best effort */ }
+  try { if (receiver) receiver.closeAll(); if (injector) await injector.releaseAll(); if (monitor) monitor.stop(); if (socket) socket.close(); } catch (_) { /* best effort */ }
   notify({ type: 'ended', code, reason: why });
   setTimeout(() => process.exit(code), hasParent ? 150 : 0); // let the last IPC message out
 }
@@ -53,11 +61,13 @@ async function shutdown(code, why) {
 // ---------- messages from the desktop app ----------
 process.on('message', (m) => {
   if (!m || typeof m !== 'object') return;
-  if (m.type === 'init') return connect(String(m.token || ''), m.viewOnly === true);                       // start the session
+  if (m.type === 'init') return connect(String(m.token || ''), m.viewOnly === true, String(m.blockReason || ''));                       // start the session
   if (m.type === 'stop') return shutdown(0, 'Stopped by the Client.');
   // Vendor input that arrived on the WebRTC data channel in the Client's window, forwarded by Electron's main process.
   // It is schema-checked again in injector.handle(), exactly like input from any other path.
-  if (m.type === 'input' && injector && typeof m.data === 'string' && m.data.length <= 600) {
+  // The Client chose which display is shared: map the vendor's positions onto it
+  if (m.type === 'display') { display = m.display || null; if (injector) { injector.setDisplay(display); announce(); } return; }
+  if (m.type === 'input' && injector && !ending && typeof m.data === 'string' && m.data.length <= MAX_FRAME) {
     let ev; try { ev = JSON.parse(m.data); } catch (_) { return; }
     injector.handle(ev);
   }
@@ -66,21 +76,49 @@ process.on('message', (m) => {
 process.on('SIGINT', () => shutdown(0, 'Stopped by the Client.'));
 process.on('SIGTERM', () => shutdown(0, 'Stopped.'));
 
+// ---------- what this PC can do right now, told to the desktop app, the server and both screens ----------
+let baseInputReason = '';
+const canInput = () => !!injector && injector.ready && !injector.windowOnly;
+const inputReasonNow = () => (canInput() ? '' : (injector && injector.ready && injector.windowOnly ? WINDOW_ONLY_REASON : baseInputReason));
+// Re-announces the current state (after a reconnect, or when the Client switches between a screen and a single window)
+function announce() {
+  if (!monitor || !injector || !socket || !started) return;
+  const shown = monitor.state !== 'locked' && !canInput() ? 'view-only' : monitor.state;
+  notify({ type: 'input', ready: canInput(), reason: inputReasonNow() });
+  notify({ type: 'state', state: shown, policy: policyName });
+  socket.emit('agent-state', { taskId, state: shown, policy: policyName });
+}
+
 // ---------- session ----------
-function connect(token, viewOnly = false) {
+function connect(token, viewOnly = false, why = '') {
   if (socket || ending) return;                      // one session per agent process
   if (!token) return shutdown(1, 'No agent token was provided.');
+  viewOnlyMode = viewOnly === true;
+  blockReason = String(why || '').slice(0, 300);
   socket = io(cfg.SERVER_URL, { auth: { token }, reconnectionDelayMax: 5000 });
 
   socket.on('connect', () => {
     log('info', 'Connected to ScopeDesk.');
     notify({ type: 'connected' });
-    socket.emit('agent-hello', {}, (res) => { onHello(res).catch((e) => fatal(e, 'session-start')); });
+    socket.emit('agent-hello', { protocol: AGENT_PROTOCOL }, (res) => { onHello(res).catch((e) => fatal(e, 'session-start')); });
   });
-  socket.on('remote-input', (ev) => { if (injector) injector.handle(ev); });   // server-relay fallback path
-  socket.on('control-halt', (d) => { if (monitor) monitor.lock(); if (d && d.reason === 'ended') shutdown(0, 'Session ended.'); });
-  socket.on('control-resume', () => { if (monitor) monitor.rearm(); });
-  socket.on('session-ended', () => shutdown(0, 'Session ended.'));
+  // Every server event carries a taskId. Anything about ANOTHER task is ignored: it used to stop (or even unlock) this agent when a
+  // different ticket of the same Client expired or was terminated.
+  const mine = (d) => !(d && d.taskId !== undefined && taskId !== null && Number(d.taskId) !== taskId);
+  socket.on('remote-input', (ev) => { if (injector && !ending) injector.handle(ev); });   // server-relay fallback path
+  socket.on('control-halt', (d) => {
+    if (!mine(d)) return;
+    if (monitor) monitor.lock();
+    if (d && d.reason === 'ended') shutdown(0, 'Session ended.');
+    else if (d && d.reason === 'revoked') shutdown(0, 'Remote control was stopped by the Client.');
+  });
+  socket.on('control-resume', (d) => { if (mine(d) && monitor) monitor.rearm(); });
+  socket.on('session-ended', (d) => { if (mine(d)) shutdown(0, 'Session ended.'); });
+  // Vendor -> Client file, relayed by the server (only into the task's approved folders, see file-receiver.js)
+  socket.on('file-chunk', (c, ack) => {
+    const ok = !ending && !!receiver && mine(c) && receiver.chunk(c);
+    if (typeof ack === 'function') ack({ ok });
+  });
   socket.on('connect_error', (e) => {
     if (e.message === 'Authentication required') return shutdown(1, 'This agent token is expired or invalid. Create the ticket again.');
     log('warn', `Cannot reach ${cfg.SERVER_URL} (${e.message}). Retrying...`);
@@ -90,8 +128,15 @@ function connect(token, viewOnly = false) {
 
 // The server accepted this agent: load the policy, start the foreground monitor and the input injector.
 async function onHello(res) {
-      if (!res || !res.ok) return shutdown(1, (res && res.error) || 'The server refused this agent.');
-      if (started) return; // reconnect: the monitor is already running
+      if (!res || !res.ok) return shutdown(started ? 0 : 1, (res && res.error) || 'The server refused this agent.');
+      if (started) {
+        // Reconnect: the monitor is already running. The server forgot this agent's state when the socket dropped, and the desktop
+        // app saw 'connected' again, so announce the CURRENT state once more (it used to stay "waiting"/"connected" for good, which
+        // also cut the WebRTC fast path because input is only forwarded in the 'running' phase).
+        log('info', 'Reconnected.');
+        announce();
+        return;
+      }
       started = true;
       taskId = res.taskId;
 
@@ -99,6 +144,7 @@ async function onHello(res) {
       try { policy = loadPolicy({ taskType: res.taskType, targetProcess: res.targetProcess, taskId: res.taskId, extra: { allowedPaths: res.allowedPaths, allowedApps: res.allowedApps }, sessionConfigFile: cfg.SESSION_CONFIG, log }); }
       catch (e) { return shutdown(1, 'Could not load the security policy: ' + e.message); }
       cfg.ALWAYS_ALLOW.forEach((a) => { policy.apps.add(cfg.normalize(a)); policy.appList.push(a); });
+      policyName = policy.name;
       const probe = createPathProbe(log);
       if (policy.allowedPaths.length && !probe.supported) {
         return shutdown(1, `Policy "${policy.name}" restricts folders, but this operating system cannot report which folder a window shows. Refusing to start (a weaker check would be unsafe).`);
@@ -106,7 +152,17 @@ async function onHello(res) {
       monitor = new ForegroundMonitor({
         policy, probe, pollMs: cfg.POLL_MS, strikes: cfg.STRIKES, attributionMs: cfg.ATTRIBUTION_MS, log,
         debug: cfg.DEBUG_FOREGROUND,
-        onState: (state) => { log('info', `State: ${state}`); notify({ type: 'state', state, policy: policy.name }); socket.emit('agent-state', { taskId, state, policy: policy.name }); if (state === 'locked') injector.releaseAll(); },
+        // Why vendor input is not being applied yet (which app is in front, or why the window cannot be read). App names only.
+        onDiag: (detail) => { log('info', `Monitor: ${detail}`); notify({ type: 'diag', detail }); },
+        onState: (state) => {
+          // The server and both screens are told the truth: when this PC cannot apply input (view-only, no nut-js, macOS refused) the
+          // state is 'view-only', never 'armed'. A locked state always wins.
+          const shown = state !== 'locked' && !canInput() ? 'view-only' : state;
+          log('info', `State: ${state}${shown !== state ? ' (reported as ' + shown + ')' : ''}`);
+          notify({ type: 'state', state: shown, policy: policy.name });
+          socket.emit('agent-state', { taskId, state: shown, policy: policy.name });
+          if (state === 'locked') injector.releaseAll();
+        },
         onViolation: ({ processName, kind, detail }) => {
           log('error', `VIOLATION (${kind}): ${processName}${detail ? ' -> ' + detail : ''}. Input locked, reporting.`);
           // The desktop app reacts to this at once (before any server round trip): it freezes the data channel,
@@ -115,8 +171,17 @@ async function onHello(res) {
           socket.emit('host-violation', { taskId, processName, kind, detail }, (ack) => { if (ack && !ack.ok) log('warn', 'Server did not accept the report: ' + ack.error); });
         }
       });
-      injector = new InputInjector({ monitor, log, viewOnly: cfg.VIEW_ONLY || viewOnly, policy });
+      injector = new InputInjector({ monitor, log, viewOnly: !!(cfg.VIEW_ONLY || viewOnlyMode), policy });
       injector.init();
+      if (display) injector.setDisplay(display);
+      receiver = createFileReceiver({
+        policy, log, isLocked: () => !monitor || monitor.state === 'locked' || viewOnlyMode,
+        report: (r) => { socket.emit('file-result', { taskId, ...r }); notify({ type: 'file', ok: r.ok, name: r.name || '', folder: r.folder || '', error: r.error || '' }); }
+      });
+      // Tell the desktop app whether input can really be applied, and why not. (Used to fail silently: "Remote control is OFF" was only logged.)
+      const inputReason = blockReason || injector.reason || (viewOnlyMode || cfg.VIEW_ONLY ? 'View-only mode was requested.' : '');
+      baseInputReason = injector.ready ? '' : (inputReason || 'The input library could not be loaded.');
+      notify({ type: 'input', ready: canInput(), reason: inputReasonNow() });
 
       try { await monitor.start(); }
       catch (e) {
@@ -125,8 +190,7 @@ async function onHello(res) {
       }
       if (res.halted) monitor.lock();
       log('info', `Task #${taskId} "${res.title}". Policy: ${policy.name}. Allowed apps: ${policy.appList.join(', ')}.` + (policy.allowedPaths.length ? ` Allowed folders: ${policy.allowedPaths.join(' | ')}.` : ''));
-      socket.emit('agent-state', { taskId, state: monitor.state, policy: policy.name });
-      notify({ type: 'state', state: monitor.state, policy: policy.name });
+      announce();                                    // the real state: view-only when this PC cannot apply input (or one window is shared)
 
       // Defence in depth: also stop locally when the window ends, even if the server cannot be reached
       const msLeft = Date.parse(res.windowEnd) - (Date.now() + (res.serverTime - Date.now()));
@@ -135,5 +199,5 @@ async function onHello(res) {
 
 // ---------- start ----------
 if (cfg.TOKEN) connect(cfg.TOKEN);                       // terminal / legacy start with a token already known
-else if (hasParent) { log('info', 'Standby: waiting for the desktop app to start a session.'); notify({ type: 'standby' }); }
+else if (hasParent) { log('info', 'Standby: waiting for the desktop app to start a session.'); notify({ type: 'standby', protocol: AGENT_PROTOCOL }); }
 else { log('error', 'No agent token. Run this through the ScopeDesk desktop app, or set SCOPEDESK_AGENT_TOKEN for development.'); process.exit(1); }

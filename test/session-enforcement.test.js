@@ -41,7 +41,8 @@ test('session timers: ensure() arms the countdown from the database once, and ex
 });
 
 function rig({ allowedPaths = ['C:\\Clients\\Acme'], role = 'vendor' } = {}) {
-  const handlers = {}; const emitted = []; const disconnected = []; const breaches = []; const cancelled = [];
+  const handlers = {}; const emitted = []; const disconnected = []; const breaches = []; const cancelled = []; const browserEmits = []; const toTask = [];
+  const state = { role };
   const db = {
     get: async (sql) => {
       if (/allowed_paths, window_end/.test(sql)) return { allowed_paths: JSON.stringify(allowedPaths), window_end: new Date(Date.now() + 60000).toISOString() };
@@ -54,13 +55,13 @@ function rig({ allowedPaths = ['C:\\Clients\\Acme'], role = 'vendor' } = {}) {
     sockets: { sockets: new Map([['agent1', { disconnect: (v) => disconnected.push(v) }]]) }
   };
   const rc = createRemoteControl({
-    io, db, authorizeRtc: async () => role, emitToTask: async () => {}, verifyToken: () => null,
+    io, db, authorizeRtc: async () => state.role, emitToTask: async (id, ev, p) => { toTask.push({ id, ev, p }); }, verifyToken: () => null,
     timers: { cancel: (id) => cancelled.push(id), ensure: async () => true },
     onBreach: (b) => breaches.push(b)
   });
-  const browser = { on(ev, fn) { handlers[ev] = fn; } };
+  const browser = { on(ev, fn) { handlers[ev] = fn; }, emit(ev, p) { browserEmits.push({ ev, p }); } };
   rc.registerBrowser(browser, { userId: 9, role });
-  return { rc, handlers, emitted, disconnected, breaches, cancelled, agentSock };
+  return { rc, handlers, emitted, disconnected, breaches, cancelled, agentSock, browserEmits, state, toTask };
 }
 
 test('an out-of-scope folder request ends in a breach: nothing reaches the PC, input is halted', async () => {
@@ -94,7 +95,7 @@ test('teardown: halts, cancels the countdown, drops the agent socket, is safe to
   const r = rig();
   r.rc.registerAgent(r.agentSock);
   let helloReply;
-  await r.handlers['agent:agent-hello']({}, (x) => { helloReply = x; });
+  await r.handlers['agent:agent-hello']({ protocol: 9 }, (x) => { helloReply = x; });
   assert.equal(helloReply.ok, true); assert.equal(r.rc.agentOnline(5), true);
   r.rc.teardown(5, 'time_expired');
   r.rc.teardown(5, 'time_expired');
@@ -104,4 +105,63 @@ test('teardown: halts, cancels the countdown, drops the agent socket, is safe to
   assert.ok(r.emitted.some((e) => e.ev === 'control-halt' && e.p.reason === 'ended' && e.p.endReason === 'time_expired'));
   await tick(300);
   assert.deepEqual(r.disconnected, [true]);              // the agent's socket was closed (once)
+});
+
+async function withAgent(r) {
+  r.rc.registerAgent(r.agentSock);
+  await r.handlers['agent:agent-hello']({ protocol: 9 }, () => {});
+}
+const toAgent = (r) => r.emitted.filter((e) => e.id === 'agent1' && e.ev === 'remote-input').map((e) => e.p);
+
+test('relay path: vendor mouse and keyboard events are validated and forwarded to the host agent', async () => {
+  const r = rig();
+  await withAgent(r);
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'move', x: 0.25, y: 0.75 } });
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'down', x: 0.25, y: 0.75, b: 0 } });
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'key', k: 'KeyA', d: true } });
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'wheel', dx: 0, dy: 120 } });
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'evil', cmd: 'calc' } });            // not a valid shape: dropped
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'move', x: 7, y: 0 } });             // out of range: dropped
+  assert.deepEqual(toAgent(r).map((e) => e.t), ['move', 'down', 'key', 'wheel']);
+  assert.equal(r.browserEmits.length, 0);                                                     // delivered: no warning to the vendor
+});
+
+test('no host agent connected: the vendor is told (once in a while), not left guessing', async () => {
+  const r = rig();                                                                            // agent never registered
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'key', k: 'KeyA', d: true } });
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'key', k: 'KeyA', d: false } });
+  const notes = r.browserEmits.filter((e) => e.ev === 'input-undeliverable');
+  assert.equal(notes.length, 1);                                                              // rate limited
+  assert.deepEqual(notes[0].p, { taskId: 5, reason: 'agent-offline' });
+});
+
+test('input is refused immediately after termination, after revocation and after a halt', async () => {
+  const r = rig();
+  await withAgent(r);
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'key', k: 'KeyA', d: true } });
+  assert.equal(toAgent(r).length, 1);
+
+  r.state.role = null;                                                                        // the Client revoked / the vendor is no longer authorised
+  await tick(2100);                                                                           // (the 2 s authorisation cache expires)
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'key', k: 'KeyB', d: true } });
+  assert.equal(toAgent(r).length, 1);
+
+  r.state.role = 'vendor';
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'key', k: 'KeyC', d: true } });
+  assert.equal(toAgent(r).length, 2);
+  r.rc.teardown(5, 'client_terminated');                                                      // the Client pressed Terminate
+  await r.handlers['remote-input']({ taskId: 5, e: { t: 'key', k: 'KeyD', d: true } });
+  assert.equal(toAgent(r).length, 2);                                                         // refused at once
+  const halt = r.emitted.find((e) => e.ev === 'control-halt' && e.p.reason === 'ended');
+  assert.equal(halt.p.endReason, 'client_terminated');                                        // the real termination reason is carried
+});
+
+test('the agent can report view-only so both screens know control is not possible', async () => {
+  const r = rig();
+  await withAgent(r);
+  await r.handlers['agent:agent-state']({ taskId: 5, state: 'view-only', policy: 'p' });
+  assert.ok(r.toTask.some((e) => e.ev === 'agent-state' && e.p.state === 'view-only'));       // both screens are told
+  const before = r.toTask.length;
+  await r.handlers['agent:agent-state']({ taskId: 5, state: 'nonsense', policy: 'p' });       // unknown states are ignored
+  assert.equal(r.toTask.length, before);
 });

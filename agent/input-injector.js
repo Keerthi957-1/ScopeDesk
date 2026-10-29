@@ -2,13 +2,24 @@
 // Applies the vendor's mouse/keyboard events on this PC through @nut-tree-fork/nut-js.
 // Defence in depth: the server already validated the event, and it is validated again here.
 // Mouse x/y arrive normalised (0..1) relative to the shared screen, so the vendor's window size does not matter.
-// Assumes the Client shares their PRIMARY, ENTIRE screen (the web UI asks for that).
+// The shared screen is the PRIMARY display unless the Client picked another one (setDisplay()).
+//
+// CROSS-OS KEYBOARD (vendor OS comes with each key event as `o`: 'mac' | 'win' | 'linux'):
+//   Windows/Linux vendor -> Mac Client : the vendor's Ctrl is pressed as Command, so Ctrl+C / Ctrl+V / Ctrl+Z ... work.
+//   Mac vendor -> Windows/Linux Client : Cmd + an editing letter (C, V, X, Z, A, S, F ...) is pressed as Ctrl + that letter.
+//   Mac vendor -> Mac Client           : Command is Command.
+//   The Windows / Super key itself is never pressed on Windows/Linux.
+// Printable characters arrive as text ('text') and are typed as characters, so a different keyboard layout or OS cannot turn
+// "é" or "@" into a different key.
+//
+// Shortcuts that would leave the approved apps or end ScopeDesk are dropped on every OS:
+//   Alt+Tab, Alt+F4, Alt+Esc, Ctrl+Esc (Start menu), Ctrl+Shift+Esc (Task Manager), Cmd+Tab, Cmd+Space (Spotlight), Cmd+Q,
+//   Cmd+Option+Esc (Force Quit), Ctrl+Cmd+Q (lock), Control+Arrows on a Mac (Mission Control / Spaces).
 
 const fs = require('fs');
 const { execFile } = require('child_process');
 const { parseInput } = require('./validate');
 let nut = null;
-let screenSize = null;
 
 function loadNut() {
   if (nut) return nut;
@@ -21,7 +32,7 @@ function loadNut() {
 // KeyboardEvent.code -> nut-js Key. Built defensively: a name missing in this nut-js version is simply not mapped.
 function buildKeyMap(Key) {
   const map = {};
-  const add = (code, name) => { if (Key[name] !== undefined) map[code] = Key[name]; };
+  const add = (code, ...names) => { const n = names.find((x) => Key[x] !== undefined); if (n) map[code] = Key[n]; };
   for (let c = 65; c <= 90; c++) { const L = String.fromCharCode(c); add('Key' + L, L); }
   for (let d = 0; d <= 9; d++) { add('Digit' + d, 'Num' + d); add('Numpad' + d, 'NumPad' + d); }
   for (let f = 1; f <= 12; f++) add('F' + f, 'F' + f);
@@ -32,56 +43,96 @@ function buildKeyMap(Key) {
     ShiftLeft: 'LeftShift', ShiftRight: 'RightShift', ControlLeft: 'LeftControl', ControlRight: 'RightControl',
     AltLeft: 'LeftAlt', AltRight: 'RightAlt',
     Minus: 'Minus', Equal: 'Equal', BracketLeft: 'LeftBracket', BracketRight: 'RightBracket', Backslash: 'Backslash',
-    Semicolon: 'Semicolon', Quote: 'Quote', Comma: 'Comma', Period: 'Period', Slash: 'Slash', Backquote: 'Grave'
+    Semicolon: 'Semicolon', Quote: 'Quote', Comma: 'Comma', Period: 'Period', Slash: 'Slash', Backquote: 'Grave',
+    NumpadAdd: 'Add', NumpadSubtract: 'Subtract', NumpadMultiply: 'Multiply', NumpadDivide: 'Divide', NumpadDecimal: 'Decimal'
   }).forEach(([code, name]) => add(code, name));
+  // Command (Mac) / Super: used only for the cross-OS mapping below, never pressed on Windows or Linux
+  add('MetaLeft', 'LeftCmd', 'LeftSuper', 'LeftWin');
+  add('MetaRight', 'RightCmd', 'RightSuper', 'RightWin');
   return map;
 }
 
+const CTRL = new Set(['ControlLeft', 'ControlRight']);
+const META = new Set(['MetaLeft', 'MetaRight', 'OSLeft', 'OSRight']);
+const ALT = new Set(['AltLeft', 'AltRight']);
+const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+// Mac vendor's Cmd + these letters becomes Ctrl + letter on Windows/Linux (copy, paste, cut, undo, redo, select all, find, save...)
+const SHORTCUT_LETTERS = new Set(['KeyA', 'KeyC', 'KeyV', 'KeyX', 'KeyZ', 'KeyY', 'KeyF', 'KeyS', 'KeyP', 'KeyN', 'KeyO', 'KeyW', 'KeyT', 'KeyB', 'KeyI', 'KeyU']);
+
 class InputInjector {
-  constructor({ monitor, log, viewOnly, policy, launcher = launchFileManager }) {
+  constructor({ monitor, log, viewOnly, policy, launcher = launchFileManager, platform = process.platform }) {
     this.monitor = monitor; this.log = log; this.viewOnly = viewOnly;
     this.policy = policy; this.launcher = launcher;
+    this.hostMac = platform === 'darwin';
     this.keyMap = null;
-    this.down = new Set();     // keys currently held, so they can all be released on halt
+    this.down = new Map();     // vendor key code -> the host key code really pressed (so the right key is released)
     this.buttons = new Set();
+    this.vendorMeta = false;   // Mac vendor holds Cmd (not pressed on Windows/Linux, see SHORTCUT_LETTERS)
+    this.ctrlForMeta = false;  // we pressed Ctrl on the vendor's Cmd behalf
     this.queue = Promise.resolve();
     this.pending = 0;
     this.ready = false;
+    this.reason = '';          // why input is off, in words the Client can read
+    this.display = null;       // { x, y, width, height, primary } of the shared display (null = primary)
+    this.windowOnly = false;   // a single window is shared: watch only
+    this.screenSize = null;
   }
 
   init() {
-    if (this.viewOnly) { this.log('info', 'VIEW_ONLY=true: vendor input will not be applied.'); return false; }
+    if (this.viewOnly) { this.reason = 'View-only mode: the vendor can watch but not control.'; this.log('info', 'VIEW_ONLY=true: vendor input will not be applied.'); return false; }
     try {
       loadNut();
       this.keyMap = buildKeyMap(nut.Key);
       this.ready = true;
     } catch (err) {
+      this.reason = `The input library could not start (${String(err && err.message || err).split('\n')[0].slice(0, 120)}).`;
       this.log('warn', `Remote control is OFF (could not load nut-js: ${err.message}). The vendor can watch but not control.`);
     }
     return this.ready;
   }
 
+  /** The Client chose which display is shared. Positions are then mapped onto THAT display. */
+  setDisplay(d) {
+    // One WINDOW is shared (not a screen): the vendor may watch, but input is off. A window moves, overlaps and resizes, so a
+    // position in the vendor's picture cannot be mapped safely onto this desktop.
+    this.windowOnly = !!(d && d.windowOnly);
+    if (this.windowOnly) { this.display = null; this.screenSize = null; this.log('info', 'Shared: one window (vendor input is off)'); return; }
+    const ok = d && [d.x, d.y, d.width, d.height].every((n) => Number.isFinite(n)) && d.width > 0 && d.height > 0;
+    this.display = ok ? { x: d.x, y: d.y, width: d.width, height: d.height, primary: d.primary === true } : null;
+    this.screenSize = null;
+    this.log('info', this.display && !this.display.primary ? `Shared display: ${d.width}x${d.height} at ${d.x},${d.y}` : 'Shared display: primary');
+  }
+
   // Events are applied strictly in order; if the queue backs up, mouse moves are dropped first
   handle(raw) {
     const event = parseInput(raw);
-    if (!event || this.state === 'locked') return;
+    if (!event || this.state === 'locked' || this.windowOnly) return;
     if (event.t === 'open') { this.openFolder(event.p).catch((e) => this.log('warn', 'Open folder error: ' + e.message)); return; }
     if (!this.ready) return;
     if (this.pending > 150 && event.t === 'move') return;
     this.pending++;
     this.queue = this.queue
       .then(() => this.apply(event))
-      .catch((e) => this.log('warn', 'Input error: ' + e.message))
+      .catch((e) => this.log('warn', `Input error (${event.t}): ` + e.message))   // the event type only, never its content
       .finally(() => { this.pending--; });
   }
 
   get state() { return this.monitor.state; }
 
+  async point(x, y) {
+    const d = this.display;
+    if (d && !d.primary) return new nut.Point(Math.round(d.x + x * (d.width - 1)), Math.round(d.y + y * (d.height - 1)));
+    if (!this.screenSize) this.screenSize = { w: await nut.screen.width(), h: await nut.screen.height() };
+    return new nut.Point(Math.round(x * (this.screenSize.w - 1)), Math.round(y * (this.screenSize.h - 1)));
+  }
+
   async apply(event) {
     if (!(await this.monitor.permit(event))) return;
-    const { mouse, keyboard, screen, Point, Button } = nut;
+    const { mouse, Button } = nut;
 
     if (event.t === 'key') return this.applyKey(event);
+    if (event.t === 'text') return nut.keyboard.type(event.s);
+    if (event.t === 'clip') return this.paste(event);
 
     if (event.t === 'wheel') {
       const steps = Math.max(1, Math.round(Math.abs(event.dy || event.dx) / 40));
@@ -90,8 +141,7 @@ class InputInjector {
       return;
     }
 
-    if (!screenSize) screenSize = { w: await screen.width(), h: await screen.height() };
-    await mouse.setPosition(new Point(Math.round(event.x * (screenSize.w - 1)), Math.round(event.y * (screenSize.h - 1))));
+    await mouse.setPosition(await this.point(event.x, event.y));
     if (event.t === 'down' || event.t === 'up') {
       const button = [Button.LEFT, Button.MIDDLE, Button.RIGHT][event.b];
       if (event.t === 'down') { await mouse.pressButton(button); this.buttons.add(button); }
@@ -117,27 +167,70 @@ class InputInjector {
     this.launcher(p);
   }
 
-  async applyKey({ k, d }) {
-    // Never let the vendor press the Windows/Command key, or use Alt+Tab / Alt+F4 / Ctrl+Esc to leave the approved app
-    if (/^Meta|^OS/.test(k)) return;
-    const alt = this.down.has('AltLeft') || this.down.has('AltRight');
-    const ctrl = this.down.has('ControlLeft') || this.down.has('ControlRight');
-    if ((alt && (k === 'Tab' || k === 'F4' || k === 'Escape')) || (ctrl && k === 'Escape')) return;
+  held(set) { for (const host of this.down.values()) if (set.has(host)) return true; return false; }
 
-    const key = this.keyMap[k];
-    if (key === undefined) return;
-    if (d) { await nut.keyboard.pressKey(key); this.down.add(k); }
-    else { await nut.keyboard.releaseKey(key); this.down.delete(k); }
+  /**
+   * Pure decision for one key event: which HOST key to press/release, or null to drop it. Exported behaviour is tested.
+   * @returns {{ host: string|null, ctrlFirst?: boolean, why?: string }}
+   */
+  translateKey({ k, d, o }) {
+    const vendorMac = o ? o === 'mac' : this.hostMac;
+    if (CTRL.has(k)) return { host: this.hostMac && !vendorMac ? (k === 'ControlLeft' ? 'MetaLeft' : 'MetaRight') : k };
+    if (META.has(k)) {
+      if (this.hostMac && vendorMac) return { host: k.endsWith('Right') ? 'MetaRight' : 'MetaLeft' };
+      if (vendorMac) { this.vendorMeta = d; return { host: null, why: 'held as Cmd' }; }
+      return { host: null, why: 'The Windows / Super key is not allowed.' };
+    }
+    if (!d) return { host: k };
+    const alt = this.held(ALT), ctrl = this.held(CTRL), cmd = this.held(META);
+    if (alt && (k === 'Tab' || k === 'F4' || k === 'Escape')) return { host: null, why: 'Alt+Tab / Alt+F4 / Alt+Esc are not allowed.' };
+    if (!this.hostMac && ctrl && k === 'Escape') return { host: null, why: 'Ctrl+Esc / Ctrl+Shift+Esc are not allowed.' };
+    if (this.hostMac && cmd && (k === 'Tab' || k === 'Space' || k === 'KeyQ' || (alt && k === 'Escape'))) return { host: null, why: 'This Command shortcut is not allowed.' };
+    if (this.hostMac && ctrl && ARROWS.has(k)) return { host: null, why: 'Mission Control / Spaces shortcuts are not allowed.' };
+    if (!this.hostMac && this.vendorMeta) {
+      if (SHORTCUT_LETTERS.has(k)) return { host: k, ctrlFirst: true };
+      return { host: null, why: 'This Command shortcut has no Windows/Linux equivalent here.' };
+    }
+    return { host: k };
+  }
+
+  async applyKey(ev) {
+    const { k, d } = ev;
+    const r = this.translateKey(ev);
+    if (!d) {
+      if (META.has(k) && !this.hostMac && this.ctrlForMeta) { await nut.keyboard.releaseKey(this.keyMap.ControlLeft); this.ctrlForMeta = false; }
+      const host = this.down.get(k);
+      if (host === undefined) return;
+      this.down.delete(k);
+      if (this.keyMap[host] !== undefined) await nut.keyboard.releaseKey(this.keyMap[host]);
+      return;
+    }
+    if (!r.host || this.keyMap[r.host] === undefined) return;
+    if (r.ctrlFirst && !this.ctrlForMeta) { await nut.keyboard.pressKey(this.keyMap.ControlLeft); this.ctrlForMeta = true; }
+    await nut.keyboard.pressKey(this.keyMap[r.host]);
+    this.down.set(k, r.host);
+  }
+
+  // Vendor pasted text: it goes on THIS PC's clipboard, then the paste shortcut is pressed inside the approved app.
+  // Only vendor -> Client: nothing on the Client's clipboard is ever sent to the vendor.
+  async paste(ev) {
+    if (ev.s && nut.clipboard && typeof nut.clipboard.setContent === 'function') await nut.clipboard.setContent(ev.s);
+    const modifierHeld = this.held(this.hostMac ? META : CTRL) || this.ctrlForMeta || (!this.hostMac && this.vendorMeta);
+    if (modifierHeld) { await this.applyKey({ k: 'KeyV', d: true, o: ev.o }); await this.applyKey({ k: 'KeyV', d: false, o: ev.o }); return; }
+    const mod = this.keyMap[this.hostMac ? 'MetaLeft' : 'ControlLeft'];   // pasted from a menu: press the paste shortcut ourselves
+    await nut.keyboard.pressKey(mod); await nut.keyboard.pressKey(this.keyMap.KeyV);
+    await nut.keyboard.releaseKey(this.keyMap.KeyV); await nut.keyboard.releaseKey(mod);
   }
 
   // Called on halt/exit so no key or mouse button stays stuck down on the Client's PC
   async releaseAll() {
     if (!this.ready) return;
     try {
-      for (const code of [...this.down]) { if (this.keyMap[code] !== undefined) await nut.keyboard.releaseKey(this.keyMap[code]); }
+      for (const host of [...this.down.values()]) { if (this.keyMap[host] !== undefined) await nut.keyboard.releaseKey(this.keyMap[host]); }
+      if (this.ctrlForMeta) await nut.keyboard.releaseKey(this.keyMap.ControlLeft);
       for (const b of [...this.buttons]) await nut.mouse.releaseButton(b);
     } catch (_) { /* best effort */ }
-    this.down.clear(); this.buttons.clear();
+    this.down.clear(); this.buttons.clear(); this.ctrlForMeta = false; this.vendorMeta = false;
   }
 }
 
@@ -148,4 +241,4 @@ function launchFileManager(folder) {
   execFile(cmd, args, { windowsHide: false }, () => { /* explorer.exe exits with code 1 even on success */ });
 }
 
-module.exports = { InputInjector, buildKeyMap };
+module.exports = { InputInjector, buildKeyMap, SHORTCUT_LETTERS };

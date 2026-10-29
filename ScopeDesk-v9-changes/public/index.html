@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScopeDesk - Secure Remote Support Sandbox</title>
+    <link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+
+    <!-- ================= SYSTEM AUTHENTICATION GATEWAY ================= -->
+    <div id="authContainer" class="auth-wrapper">
+        <div class="auth-split">
+            <!-- Left Brand Hero Column -->
+            <div class="auth-sidebar">
+                <div class="brand">
+                    <div class="logo-icon"></div>
+                    <span class="brand-name">ScopeDesk</span>
+                </div>
+                <div class="auth-hero-text">
+                    <span class="badge-pill">• TASK-SCOPED REMOTE SUPPORT</span>
+                    <h2>The right help.<br>Within your limits.</h2>
+                    <p>A secure sandboxed workspace connecting small offices with trusted remote technicians. Every terminal layer session stays strictly confined to a single verified task boundary.</p>
+                </div>
+                <div class="auth-footer-note">
+                    <p>🔒 <strong>Isolation Active:</strong> Broad filesystem configurations and internal network folders remain dynamically blocked outside explicit task scope definitions.</p>
+                </div>
+            </div>
+
+            <!-- Right Dynamic Forms Area -->
+            <div class="auth-form-container">
+                <div class="auth-toggle-header">
+                    <span id="authToggleText">New to ScopeDesk?</span>
+                    <button id="btnSwitchAuthMode" class="link-btn">Create an account →</button>
+                </div>
+
+                <div class="auth-box">
+                    <h2 id="authFormTitle">Sign in to ScopeDesk</h2>
+                    <p id="authFormSubtitle" class="auth-sub">Your secure remote support hub, with clear constraints.</p>
+
+                    <div id="authError" class="auth-error hidden" role="alert"></div>
+                    <div id="authSuccess" class="auth-success hidden" role="status"></div>
+
+                    <!-- SIGN IN / SIGN UP -->
+                    <form id="authForm" novalidate>
+                        <div id="roleSelectorGroup" class="form-group hidden">
+                            <label>Select Workspace Account Role</label>
+                            <div class="role-grid">
+                                <label class="role-card active" data-role="client">
+                                    <input type="radio" name="accountRole" value="client" checked>
+                                    <div class="role-card-content">
+                                        <span class="role-icon">🏢</span>
+                                        <strong>Client Account</strong>
+                                        <p>Request remote aid, specify boundaries, generate session keys, and monitor engineers.</p>
+                                    </div>
+                                </label>
+                                <label class="role-card" data-role="vendor">
+                                    <input type="radio" name="accountRole" value="vendor">
+                                    <div class="role-card-content">
+                                        <span class="role-icon">🔧</span>
+                                        <strong>Vendor Partner</strong>
+                                        <p>Claim ticket invitations, validate tokens, and launch isolated target processes.</p>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="authUsername" id="lblAuthUsername">Username or email</label>
+                            <input type="text" id="authUsername" placeholder="e.g., olivia.chen" autocomplete="username">
+                            <p id="usernameMsg" class="field-msg hidden"></p>
+                        </div>
+
+                        <div id="emailGroup" class="form-group hidden">
+                            <label for="authEmail">Email address</label>
+                            <input type="email" id="authEmail" placeholder="you@company.com" autocomplete="email">
+                            <p id="emailMsg" class="field-msg hidden"></p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="authPassword">Security access password</label>
+                            <div class="password-field">
+                                <input type="password" id="authPassword" placeholder="••••••••" autocomplete="current-password">
+                                <button type="button" class="pw-toggle" aria-label="Show password" title="Show / hide password"><svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="icon-eye-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                            </div>
+                            <p id="pwHint" class="input-tip-note hidden">At least 8 characters.</p>
+                        </div>
+
+                        <div id="forgotLinkRow" class="field-row-links">
+                            <button type="button" id="btnForgotPassword" class="link-btn">Forgot password?</button>
+                        </div>
+
+                        <button type="submit" id="btnSubmitAuth" class="btn-primary w-100">Sign In to Dashboard →</button>
+                    </form>
+
+                    <!-- FORGOT PASSWORD -->
+                    <form id="forgotForm" class="hidden" novalidate>
+                        <div class="form-group">
+                            <label for="forgotEmail">Account email address</label>
+                            <input type="email" id="forgotEmail" placeholder="you@company.com" autocomplete="email">
+                        </div>
+                        <button type="submit" id="btnSendCode" class="btn-primary w-100">Send reset code</button>
+                        <button type="button" class="link-btn back-link" data-back-to-signin>← Back to sign in</button>
+                    </form>
+
+                    <!-- RESET PASSWORD (step 2: the 6-digit code from the email + the new password, all inside this page) -->
+                    <form id="resetForm" class="hidden" novalidate>
+                        <div class="form-group">
+                            <label for="resetCode">Enter 6-Digit Code</label>
+                            <input type="text" id="resetCode" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456" autocomplete="one-time-code" spellcheck="false">
+                            <p id="resetCodeHint" class="input-tip-note">Sent to <b id="resetEmailLabel"></b>. Valid for 15 minutes.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="resetPassword">Enter New Password</label>
+                            <div class="password-field">
+                                <input type="password" id="resetPassword" placeholder="At least 8 characters" autocomplete="new-password">
+                                <button type="button" class="pw-toggle" aria-label="Show password" title="Show / hide password"><svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="icon-eye-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                            </div>
+                        </div>
+                        <button type="submit" id="btnConfirmReset" class="btn-primary w-100">Confirm Reset</button>
+                        <button type="button" id="btnResendCode" class="link-btn back-link">Send a new code</button>
+                        <button type="button" class="link-btn back-link" data-back-to-signin>← Back to sign in</button>
+                    </form>
+
+                    <!-- VERIFY YOUR ACCOUNT (shown right after "Create Account", or when an unverified account signs in) -->
+                    <form id="verifyForm" class="hidden" novalidate>
+                        <p id="verifyIntro" class="otp-intro">We have sent a 6-digit verification code to <b id="verifyEmailLabel"></b>. Please enter it below to activate your account.</p>
+                        <div id="otpBoxes" class="otp-boxes" role="group" aria-label="6-digit verification code">
+                            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 1" spellcheck="false">
+                            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Digit 2" spellcheck="false">
+                            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Digit 3" spellcheck="false">
+                            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Digit 4" spellcheck="false">
+                            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Digit 5" spellcheck="false">
+                            <input class="otp-box" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Digit 6" spellcheck="false">
+                        </div>
+                        <p id="verifyError" class="otp-error hidden" role="alert"></p>
+                        <p class="input-tip-note">The code expires in 15 minutes. Check your spam folder too.</p>
+                        <button type="submit" id="btnConfirmVerify" class="btn-primary w-100">Verify &amp; Activate</button>
+                        <button type="button" id="btnResendVerify" class="link-btn back-link">Resend Code</button>
+                        <button type="button" class="link-btn back-link" data-back-to-signin>← Back to sign in</button>
+                    </form>
+
+                    <!-- CONNECT EMAIL (one time, only offered on the computer the server runs on, only while email is not connected) -->
+                    <form id="mailSetupForm" class="hidden" novalidate>
+                        <p class="otp-intro">ScopeDesk sends verification codes by email. Connect the email account that will send them. You only do this once, right here, with no terminal.</p>
+                        <div class="form-group">
+                            <label for="mailUser">Sender email address</label>
+                            <input type="email" id="mailUser" placeholder="yourname@gmail.com" autocomplete="off" spellcheck="false">
+                        </div>
+                        <div class="form-group">
+                            <label for="mailPass">App password</label>
+                            <input type="password" id="mailPass" placeholder="16-character Google App Password" autocomplete="off" spellcheck="false">
+                            <p class="input-tip-note">Gmail needs an <b>App Password</b>, not your normal password: Google Account &rarr; Security &rarr; 2-Step Verification &rarr; App passwords.</p>
+                        </div>
+                        <details class="mail-advanced">
+                            <summary>Not Gmail? Mail server settings</summary>
+                            <div class="form-group"><label for="mailHost">Mail server</label><input type="text" id="mailHost" placeholder="smtp.gmail.com" autocomplete="off" spellcheck="false"></div>
+                            <div class="form-group"><label for="mailPort">Port</label><input type="text" id="mailPort" placeholder="587" inputmode="numeric" autocomplete="off"></div>
+                        </details>
+                        <p id="mailSetupError" class="otp-error hidden" role="alert"></p>
+                        <button type="submit" id="btnSaveMail" class="btn-primary w-100">Connect &amp; test</button>
+                        <button type="button" class="link-btn back-link" data-back-to-signin>← Back to sign in</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= SECURE APP INTERFACE WORKSPACE ================= -->
+    <div id="appContainer" class="dashboard-container hidden">
+        
+        <!-- Shared App Navigation Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="logo-icon"></div>
+                <span class="brand-name">ScopeDesk</span>
+            </div>
+            
+            <div class="workspace-selector">
+                <div class="workspace-avatar" id="userAvatarSlot">U</div>
+                <div class="workspace-info">
+                    <span class="workspace-title" id="userNameSlot">Profile Persona</span>
+                    <span class="workspace-role" id="userRoleBadgeSlot">System Access Tier</span>
+                </div>
+                <button id="btnLogOut" class="logout-icon" title="Terminate Profile Session">🚪</button>
+            </div>
+
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-target="overview-panel" id="navOverviewLink">📊 Primary Workspace Overview</a>
+                <a href="#" class="nav-item" data-target="session-panel" id="navSessionLink">🖥️ Remote Desktop</a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div>🛡️</div>
+                <div class="footer-text">
+                    <p class="bold">Boundary Loop Imposed.</p>
+                    <p>Process tracking daemons monitor runtime events. Scope violation attempts force terminal lockout mechanisms.</p>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Fluid Panes Workspace -->
+        <main class="main-content">
+            <!-- CLIENT: persistent breach banner. Stays on the dashboard until the Client terminates or resumes. -->
+            <div id="breachBanner" class="breach-banner hidden" role="alert" aria-live="assertive">
+                <div class="breach-text">
+                    <strong>⚠ SECURITY BREACH: the vendor's control is frozen</strong>
+                    <span id="breachWhat">-</span>
+                </div>
+                <div class="breach-actions">
+                    <button type="button" class="btn-danger btn-terminate-big" id="btnBreachTerminate">Terminate Connection</button>
+                    <button type="button" class="btn-ghost" id="btnBreachResume">Resume session</button>
+                </div>
+            </div>
+
+            <!-- CLIENT: live session bar (shown while a vendor is connected) -->
+            <div id="liveBar" class="live-bar hidden" role="status">
+                <div class="live-bar-info">
+                    <strong><span class="live-dot"></span> Live session: <span id="liveTask">-</span></strong>
+                    <span>Vendor: <b id="liveVendor">-</b></span>
+                    <span>Time window: <b id="liveWindow">-</b></span>
+                    <span>Time left: <b id="liveClock" class="session-clock-inline">--:--</b></span>
+                    <span>Screen: <b id="liveShare">not shared</b></span>
+                    <span>Host agent: <b id="liveAgent">not running</b></span>
+                </div>
+                <div class="live-bar-actions">
+                    <button type="button" class="btn-primary" id="btnShareScreen">Share my screen</button>
+                    <button type="button" class="btn-ghost" id="btnPairAgent">Start remote control</button>
+                    <button type="button" class="btn-ghost hidden" id="btnSwitchScreen" title="Share a different screen or window">Change what I share</button>
+                    <button type="button" class="btn-ghost hidden" id="btnEnableAlerts">Enable alerts</button>
+                    <button type="button" class="btn-danger btn-end-session" id="btnLiveTerminate">Terminate Connection</button>
+                </div>
+            </div>
+
+            
+            <!-- PANEL SECTION A: CLIENT ENVIRONMENT VIEWPORT -->
+            <div id="clientDashboardPanel" class="pane-view hidden">
+                <header class="content-header">
+                    <div class="breadcrumbs">MAPLE & CO. / INTERNAL CLIENT DEPLOYMENT</div>
+                    <div class="header-actions">
+                        <h1 class="welcome-heading">Good morning, <span class="profile-name">Client Admin</span></h1>
+                        <button class="btn-primary" id="btnOpenTaskModal">+ Request New Secure Support Task</button>
+                    </div>
+                    <p class="subtitle">Publish explicit remote support invitations and issue validation token strings to designated support agencies.</p>
+                </header>
+
+                <div id="newTokenNotice" class="info-alert-box hidden" style="margin-bottom: 20px;">
+                    <strong>Task created. Send this token to your vendor:</strong><br>
+                    <code class="token-code" id="newTokenValue"></code>
+                    <button type="button" class="btn-table-action" id="btnDismissToken">Dismiss</button>
+                </div>
+
+                <section class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">Active Connection Streams</span><span>💻</span></div>
+                        <div class="metric-value" id="clientActiveCount">00</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">Isolation Keys Generated</span><span>🎫</span></div>
+                        <div class="metric-value" id="clientTokenCount">00</div>
+                    </div>
+                    <div class="metric-card clickable" id="cardPartners" role="button" tabindex="0" title="View all vendor accounts">
+                        <div class="metric-header"><span class="metric-label">Approved Partner Agencies</span><span>🤝</span></div>
+                        <div class="metric-value" id="clientPartnerCount">00</div>
+                        <div class="metric-hint">View all vendors →</div>
+                    </div>
+                </section>
+
+                <div class="data-split-layout">
+                    <section class="table-section">
+                        <h3 class="section-title">Support Ticket Matrix & Single-Use Authorization Tokens</h3>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Target Task Context Description</th>
+                                        <th>Assigned Support Agency</th>
+                                        <th>Token Status</th>
+                                        <th>Runtime Compliance Status</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="clientTasksBody">
+                                    <!-- Populated via script runtime arrays -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- PANEL SECTION B: VENDOR/TECHNICIAN WORKSPACE PIPELINE -->
+            <div id="vendorDashboardPanel" class="pane-view hidden">
+                <header class="content-header">
+                    <div class="breadcrumbs">EXTERNAL PARTNER STATIONS / REMOTE ACCESS PIPELINE</div>
+                    <h1 class="welcome-heading">Technician Control Console</h1>
+                    <p class="subtitle">Claim token keys from clients, pass local credential tests, and launch explicit virtual window frames.</p>
+                </header>
+
+                <section class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">My Sessions</span><span>📥</span></div>
+                        <div class="metric-value" id="vendorIncomingCount">00</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-header"><span class="metric-label">Local Sandbox Subsystem Engine</span><span>🔒</span></div>
+                        <div class="metric-value status-ok-text">Isolation Engine Initialized</div>
+                    </div>
+                </section>
+
+                <div class="data-split-layout">
+                    <section class="table-section">
+                        <h3 class="section-title">Initialize Remote Session Stream</h3>
+                        <p class="section-subtitle">Provide a valid token issued by the client organization to construct an isolated process runtime layer.</p>
+                        
+                        <div class="token-activation-box">
+                            <input type="text" id="inputTokenKey" placeholder="Paste Token Key (e.g., SCD-1234-AB12CD)" class="token-input-field">
+                            <button id="btnValidateToken" class="btn-primary">Connect Sandboxed Terminal →</button>
+                        </div>
+                        <div id="tokenErrorFeedback" class="error-text hidden"></div>
+
+                        <h3 class="section-title" style="margin-top: 32px;">My Assigned Tasks</h3>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Requested Operations Profile</th>
+                                        <th>Origin Office Client</th>
+                                        <th>Session Status</th>
+                                        <th>Action Toolbar</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="vendorTasksBody">
+                                    <!-- Dynamic rows filled by script loop -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- PANEL SECTION C: REAL-TIME SECURE REMOTE MONITOR & RUNTIME EMULATOR -->
+            <div id="sessionMonitorPanel" class="pane-view hidden">
+                <header class="content-header">
+                    <div class="breadcrumbs">REMOTE SESSION / SCOPE ENFORCED</div>
+                    <h1 class="welcome-heading">Remote Desktop</h1>
+                    <p class="subtitle">Live view of the client's screen. Your mouse and keyboard are mirrored while the timer runs. Bringing any app other than the approved one to the front ends your access.</p>
+                </header>
+
+                <div class="sandbox-emulator-grid">
+                    <div class="emulator-screen-card">
+                        <div class="emulator-header">
+                            <span class="window-dot red"></span>
+                            <span class="window-dot yellow"></span>
+                            <span class="window-dot green"></span>
+                            <span class="window-title" id="emulatorWindowTitle">Remote screen</span>
+                            <span class="session-clock" id="vendorClock" title="Time left in the approved window">--:--</span>
+                        </div>
+                        <div class="remote-waiting" id="remoteWaiting" role="status">
+                            <strong id="remoteWaitTitle">Waiting for the client</strong>
+                            <span id="remoteWaitText">The client has to click "Share my screen". The remote screen appears here as soon as it is live.</span>
+                        </div>
+                        <div class="remote-stage hidden" id="remoteStage" tabindex="0" aria-label="Remote screen. Click to take control.">
+                            <video id="remoteVideo" autoplay playsinline muted></video>
+                            <div class="remote-overlay" id="remoteOverlay">
+                                <strong id="remoteOverlayTitle">Waiting for the client</strong>
+                                <span id="remoteOverlayText">The client has to start screen sharing.</span>
+                            </div>
+                        </div>
+                        <div class="emulator-footer-controls">
+                            <span class="text-green" id="emulatorStatusBadge">Connecting...</span>
+                            <button id="btnOpenViewport" type="button" class="btn-ghost">Open full-screen workspace</button>
+                            <button id="btnEndSession" class="btn-danger">End Session</button>
+                        </div>
+                        <div class="emulator-footer-controls" style="gap:8px">
+                            <input type="text" id="openFolderPath" maxlength="260" autocomplete="off" spellcheck="false" style="flex:1;min-width:0" placeholder="Folder to open on the client's PC, e.g. C:\BillingData\2026" aria-label="Folder to open on the client's computer">
+                            <button id="btnOpenFolder" type="button" class="btn-ghost">Open folder</button>
+                        </div>
+                    </div>
+
+                    <!-- Side Boundary Context Summary Rule Cards -->
+                    <div class="emulator-meta-sidebar">
+                        <div class="meta-section">
+                            <h4>Session Bounds Signature</h4>
+                            <div class="scope-meta-item"><strong>Assigned Operations Scope:</strong> <span id="lblScopeTask">None Active</span></div>
+                            <div class="scope-meta-item"><strong id="lblScopeClient">Request from: -</strong></div>
+                            <div class="scope-meta-item"><strong>Technician Agency:</strong> <span id="lblScopeVendor">Unassigned</span></div>
+                            <div class="scope-meta-item"><strong>Time window:</strong> <span id="lblScopeWindow">-</span></div>
+                            <div class="scope-meta-item"><strong>Time left:</strong> <b id="lblScopeClock" class="session-clock-inline">--:--</b></div>
+                            <div class="scope-meta-item"><strong>Session Reference:</strong> <code id="lblScopeToken">None</code></div>
+                        </div>
+
+                        <div class="meta-section bg-light-green">
+                            <h4 class="green-text-heading">✓ Allowed</h4>
+                            <ul class="checkmark-list">
+                                <li>Work in <strong id="lblScopeProcess">the approved app</strong> on the client's screen</li>
+                                <li>Mouse and keyboard control while the timer is running</li>
+                            </ul>
+                        </div>
+
+                        <div class="meta-section bg-light-red">
+                            <h4 class="red-text-heading">✕ Not allowed</h4>
+                            <ul class="crossmark-list">
+                                <li>Bringing any other app to the front (ends the session)</li>
+                                <li>Windows key, Alt+Tab and Alt+F4 are blocked</li>
+                                <li>Anything after the timer reaches zero</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- ================= DYNAMIC CLIENT SECURE REQUEST CREATION MODAL OVERLAY ================= -->
+    <div class="modal-overlay" id="taskModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Generate Secure Support Ticket</h3>
+                <button class="close-modal" id="btnCloseModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="newTaskForm" novalidate>
+                    <div class="form-group">
+                        <label for="vendorSelect">Vendor (who is this requested from?)</label>
+                        <select id="vendorSelect" class="form-select-control" required>
+                            <option value="">Choose a vendor...</option>
+                        </select>
+                        <small>Only this vendor will see the task or be able to use its token.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="taskText">Task (what needs to be done?)</label>
+                        <textarea id="taskText" class="form-select-control" rows="3" required minlength="5" maxlength="300" placeholder="e.g. Fix the invoice export in the billing software, using the files in &quot;C:\Clients\Acme\Invoices&quot;"></textarea>
+                        <small>If the task needs a folder, write its full path. The vendor can then open only that folder and its sub-folders. Put quotes around a path that contains spaces.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="taskWindow">Duration (how long may the vendor have access?)</label>
+                        <select id="taskWindow" class="form-select-control">
+                            <option value="15">15 minutes</option>
+                            <option value="30" selected>30 minutes</option>
+                            <option value="60">1 hour</option>
+                            <option value="120">2 hours</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label id="appsLabel" for="appsToggle">Allowed applications</label>
+                        <div class="multi-select" id="appsPicker">
+                            <button type="button" id="appsToggle" class="form-select-control multi-select-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="appsPanel">Select applications...</button>
+                            <div class="multi-select-panel hidden" id="appsPanel" role="group" aria-labelledby="appsLabel">
+                                <input type="search" id="appsFilter" class="multi-select-filter" placeholder="Search applications" autocomplete="off" aria-label="Search applications">
+                                <div id="appsList" class="multi-select-list"></div>
+                            </div>
+                        </div>
+                        <div id="appsChips" class="app-chips" aria-live="polite"></div>
+                        <p id="appsScopeWarning" class="auth-error hidden" role="note" style="margin-top:8px"></p>
+                        <small>Anything not ticked here is blocked. If the vendor tries to start another app or open another folder, the session ends and this computer is locked.</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="switch-row" for="taskAlerts">
+                            <input type="checkbox" id="taskAlerts" checked>
+                            <span class="switch-track" aria-hidden="true"></span>
+                            <span class="switch-text"><strong>Alert me about breaches and terminations</strong><br><small>Show a warning on my screen if the vendor breaks the rules or the session is ended. The protection itself always stays on.</small></span>
+                        </label>
+                    </div>
+                    <button type="submit" class="btn-primary w-100 style-margin-top">Publish Request &amp; Issue Token</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: ALL VENDORS MODAL ================= -->
+    <div class="modal-overlay" id="vendorsModal">
+        <div class="modal modal-wide">
+            <div class="modal-header">
+                <h3>Vendor Accounts</h3>
+                <button class="close-modal" data-close-modal="vendorsModal">&times;</button>
+            </div>
+            <p class="section-subtitle">Every vendor account on ScopeDesk. Send a request, report a vendor, or end their access to your organization.</p>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Vendor</th><th>Specialization</th><th>Rating</th><th>Tasks done</th><th>Status</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="vendorsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: REPORT VENDOR MODAL ================= -->
+    <div class="modal-overlay" id="reportModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Report <span id="reportVendorName">vendor</span></h3>
+                <button class="close-modal" data-close-modal="reportModal">&times;</button>
+            </div>
+            <form id="reportForm">
+                <div class="form-group">
+                    <label for="reportReason">Reason</label>
+                    <select id="reportReason" class="form-select-control">
+                        <option>Accessed unauthorized data</option>
+                        <option>Unprofessional conduct</option>
+                        <option>Did not do the agreed work</option>
+                        <option>Suspicious activity</option>
+                        <option>Other</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="reportDetails">Details (optional)</label>
+                    <textarea id="reportDetails" rows="4" maxlength="1000" class="form-select-control" placeholder="What happened?"></textarea>
+                </div>
+                <button type="submit" class="btn-danger w-100">Submit Report</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: VIOLATION ALERT MODAL ================= -->
+    <div class="modal-overlay violation-overlay" id="violationModal" role="alertdialog" aria-modal="true" aria-labelledby="violationTitle">
+        <div class="modal violation-modal" id="violationBox">
+            <div class="violation-icon">⚠️</div>
+            <h3 id="violationTitle">Security Alert</h3>
+            <p id="violationMessage">Vendor accessed unauthorized data!</p>
+            <div class="violation-details">
+                <div><strong>Task:</strong> <span id="violationTask">-</span></div>
+                <div><strong>Vendor:</strong> <span id="violationVendor">-</span></div>
+                <div><strong>What happened:</strong> <span id="violationWhat">-</span></div>
+                <div><strong>Accessed:</strong> <code id="violationProcess">-</code></div>
+            </div>
+            <div class="violation-actions">
+                <button type="button" class="btn-danger" id="btnTerminateNow">Terminate Connection</button>
+                <button type="button" class="btn-ghost" id="btnDismissViolation">Resume session</button>
+                <button type="button" class="btn-ghost" id="btnReviewViolation">Review</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: DEFENSIVE TERMINATION OVERLAY (high-priority socket alert) ================= -->
+    <div class="termination-overlay" id="terminationOverlay" role="alertdialog" aria-modal="true" aria-labelledby="termTitle" aria-describedby="termWhat" hidden>
+        <div class="termination-box">
+            <div class="termination-icon" aria-hidden="true">&#128274;</div>
+            <h1 id="termTitle">Security breach: session terminated</h1>
+            <p id="termWhat" class="termination-what"></p>
+            <dl class="termination-facts">
+                <div><dt>Task</dt><dd id="termTask">-</dd></div>
+                <div><dt>Vendor</dt><dd id="termVendor">-</dd></div>
+                <div><dt>When</dt><dd id="termWhen">-</dd></div>
+            </dl>
+            <p class="termination-note">All remote connections were closed and this computer was locked. Nothing on it can be controlled remotely.</p>
+            <button type="button" id="btnTermAck" class="termination-ack">I understand</button>
+        </div>
+    </div>
+
+    <!-- ================= CLIENT: CONSENT TO SHARE SCREEN ================= -->
+    <div class="modal-overlay" id="shareModal" role="dialog" aria-modal="true" aria-labelledby="shareTitle">
+        <div class="modal">
+            <div class="modal-header"><h3 id="shareTitle">Your vendor is ready to connect</h3></div>
+            <div class="modal-body">
+                <p><b id="shareVendor">The vendor</b> accepted your task and will see your <b>entire screen</b> and can control your mouse and keyboard until the timer ends or you terminate the session.</p>
+                <p style="margin-top:10px">Task: <b id="shareTask">this task</b><br>Approved apps: <b id="shareApps">the approved app</b><br>Duration: <b id="shareDuration">the approved window</b></p>
+                <p style="margin-top:10px">Before you start: open <b id="shareProcess">the approved app</b> and keep the ScopeDesk desktop app open. Pressing the green button below approves this vendor, this task and the time window, and starts remote control. <span id="sharePickerHelp">The browser asks what to share: <b>Entire screen</b> lets the vendor control this computer; a <b>Window</b> or a <b>Tab</b> can only be watched.</span><span id="shareDesktopHelp" hidden>Choose what to share below. A <b>screen</b> lets the vendor control this computer; a single <b>window</b> can only be watched.</span></p>
+                <div id="sharePicker" class="share-picker" hidden aria-label="What to share"></div>
+                <p id="sharePickerNote" class="share-picker-note" role="status"></p>
+                <div id="shareError" class="auth-error hidden" role="alert" style="margin-top:12px"></div>
+                <div class="violation-actions" style="margin-top:18px">
+                    <button type="button" class="btn-primary" id="btnConfirmShare">Share my screen</button>
+                    <button type="button" class="btn-ghost" data-close-modal="shareModal">Not yet</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="status-monitor.js?v=20261024gb"></script>
+    <script src="remote-input-channel.js?v=20261025a"></script>
+    <script src="rtc-channel-hub.js?v=20261025a"></script>
+    <script src="screen-share.js?v=20261029a"></script>
+    <script src="remote-input.js?v=20261031a"></script>
+    <script src="webrtc.js?v=20261031a"></script>
+    <script src="desktop-bridge.js?v=20261030a"></script>
+    <script src="script.js?v=20261031a"></script>
+    <script src="build-check.js?v=20261029v9"></script>
+</body>
+</html>

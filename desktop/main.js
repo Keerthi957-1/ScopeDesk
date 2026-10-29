@@ -9,7 +9,7 @@
 //   * the window title and a system notification say when remote control is active, and the page has a Stop button
 //   * only the ScopeDesk page itself can call the agent IPC channels, and it can only send {taskId, token}
 //   * the agent still enforces the task's allowed apps/folders and the time window (agent/policy.js, monitor.js)
-const { app, BrowserWindow, ipcMain, session, desktopCapturer, shell, Notification, net, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, session, desktopCapturer, shell, Notification, net, Menu, dialog, systemPreferences } = require('electron');
 app.setAppUserModelId('com.scopedesk.desktop');   // Windows needs this for native notifications to appear
 const path = require('path');
 const fs = require('fs');
@@ -26,7 +26,10 @@ const target = resolveServerUrl({ env: process.env, readConfigFile: () => fs.rea
 const SERVER_URL = target.url;   // '' when no valid address is configured
 
 let win = null, runner = null;
-let lastDisplayDenial = '';   // why the last screen-capture request was refused (shown to the Client so a cancel is never a mystery)
+let lastDisplayDenial = '';
+let selectedDisplayId = null;  // the display the Client chose to share (null = primary)
+let selectedWindowId = null;   // or ONE window the Client chose in the picker (then the vendor can only watch)
+let onCaptureGranted = null;   // set in setupAgentIpc: tells the host agent what is being shared   // why the last screen-capture request was refused (shown to the Client so a cancel is never a mystery)
 
 // ---------- helpers ----------
 async function healthy(url) {
@@ -104,6 +107,10 @@ function configureSession() {
   installDisplayMediaHandler({
     session: ses, desktopCapturer,
     screen: { getPrimaryDisplay: () => require('electron').screen.getPrimaryDisplay() },   // 'screen' may only be touched after app ready
+    preferredDisplayId: () => selectedDisplayId,
+    preferredWindowId: () => selectedWindowId,
+    // Only what is REALLY being captured decides how the host agent maps input: a screen (control) or one window (watch only)
+    onGrant: (g) => { if (onCaptureGranted) onCaptureGranted(g); },
     allowedOrigins: SERVER_URL ? [SERVER_URL] : [],
     log: (m) => console.log(m),
     onDeny: (why) => { lastDisplayDenial = String(why || '').slice(0, 200); }
@@ -157,14 +164,109 @@ function setupAgentIpc() {
   ipcMain.on('init-session', (event, cfg) => {
     if (!trusted(event)) return;
     const v = validateAgentConfig(cfg);
-    const r = v.ok ? runner.init(v.value) : v;
-    if (!r.ok && win && !win.isDestroyed()) win.webContents.send('agent:status', { phase: 'error', uiState: 'error', taskId: null, policy: '', detail: r.error });
+    let r = v;
+    // Remote control starts only on the Client's explicit action (approval dialog or Start button): the page marks that with manual: true.
+    // Anything else (a refresh, an old page, a reconnect) is ignored here, whatever the page does.
+    if (v.ok && !v.value.manual) { console.log('[ScopeDesk] init-session ignored: not an explicit start by the Client'); return; }
+    if (v.ok) {
+      const value = { ...v.value };
+      // macOS refuses synthetic mouse/keyboard input until the Client switches ScopeDesk on under Privacy & Security > Accessibility.
+      // Without this check the vendor would see the screen and every click would vanish without a word.
+      // Linux: Wayland sessions do not allow one program to move the mouse or type into another (and cannot report the window in
+      // front). Screen sharing still works; control needs an "X11 / Xorg" session.
+      if (process.platform === 'linux' && /wayland/i.test(String(process.env.XDG_SESSION_TYPE || '')) ) {
+        value.viewOnly = true;
+        value.blockReason = 'This Linux desktop runs Wayland, which does not let ScopeDesk control the mouse and keyboard. Log out, click the gear icon on the login screen, choose "Ubuntu on Xorg" (or "GNOME on Xorg"), log in and start again.';
+      }
+      if (process.platform === 'darwin') {
+        let trustedMac = true;
+        try { trustedMac = systemPreferences.isTrustedAccessibilityClient(value.manual); } catch (_) { /* old Electron: assume allowed */ }   // manual start also shows the macOS prompt
+        if (!trustedMac) {
+          value.viewOnly = true;
+          value.blockReason = 'macOS has not allowed ScopeDesk to control this Mac. Open System Settings > Privacy & Security > Accessibility, switch ScopeDesk on, then quit and reopen ScopeDesk.';
+        }
+      }
+      r = runner.init(value);
+    }
+    if (!r.ok) runner.fail(r.error);                      // goes through the runner so it gets a proper sequence number
   });
+  ipcMain.handle('agent:end-task', (event, taskId) => { if (trusted(event)) runner.endTask(Number(taskId), 'ended'); return { ok: true }; });
   // Vendor input frames from the Client window's data channel. High frequency, so no reply and no logging.
   ipcMain.on('agent:input', (event, frame) => { if (trusted(event) && typeof frame === 'string') runner.input(frame); });
   ipcMain.on('agent:freeze', (event) => { if (trusted(event)) runner.freeze(); });
   ipcMain.handle('agent:stop', (event) => (trusted(event) ? runner.stop('stopped by the Client') : { ok: false, error: 'Untrusted sender.' }));
   ipcMain.handle('agent:status', (event) => (trusted(event) ? runner.status() : null));
+  // Multi-monitor. The list holds ids, sizes and positions only. Bounds are in the same units the agent's mouse uses.
+  // On Windows the input library works in physical pixels, Electron in scaled (DIP) units: convert so a 150 % display maps exactly.
+  const displayInfo = (d, primaryId) => {
+    let r = d.bounds;
+    if (process.platform === 'win32') { try { r = require('electron').screen.dipToScreenRect(null, d.bounds); } catch (_) { /* keep DIP */ } }
+    return { id: String(d.id), label: d.label || '', x: r.x, y: r.y, width: r.width, height: r.height, primary: d.id === primaryId };
+  };
+  onCaptureGranted = (g) => {
+    const { screen } = require('electron');
+    const primaryId = screen.getPrimaryDisplay().id;
+    if (g.windowId) { runner.setDisplay({ windowOnly: true }); console.log('[ScopeDesk] sharing one window (vendor can watch, not control)'); return; }
+    const d = screen.getAllDisplays().find((x) => String(x.id) === String(g.displayId)) || screen.getPrimaryDisplay();
+    runner.setDisplay(displayInfo(d, primaryId));
+    console.log(`[ScopeDesk] sharing screen ${d.bounds.width}x${d.bounds.height}${d.id === primaryId ? ' (primary)' : ''}`);
+  };
+  ipcMain.handle('displays:list', (event) => {
+    if (!trusted(event)) return [];
+    const { screen } = require('electron');
+    const primaryId = screen.getPrimaryDisplay().id;
+    return screen.getAllDisplays().map((d) => displayInfo(d, primaryId));
+  });
+  ipcMain.handle('displays:select', (event, id) => {
+    if (!trusted(event)) return { ok: false };
+    const { screen } = require('electron');
+    const primaryId = screen.getPrimaryDisplay().id;
+    const d = screen.getAllDisplays().find((x) => String(x.id) === String(id));
+    if (!d) return { ok: false, error: 'That display is not connected.' };
+    selectedWindowId = null;
+    selectedDisplayId = d.id;
+    console.log(`[ScopeDesk] chosen display: ${d.bounds.width}x${d.bounds.height}${d.id === primaryId ? ' (primary)' : ''}`);
+    return { ok: true };
+  });
+  // SCREEN / WINDOW PICKER (Electron has no built-in picker on Windows/Linux). The page shows these as tiles; the Client clicks one.
+  // Screens allow remote control. A single window can only be WATCHED: positions inside a window cannot be mapped safely onto the
+  // real desktop (it moves, overlaps, changes size), so the host agent turns input off while a window is shared.
+  ipcMain.handle('sources:list', async (event) => {
+    if (!trusted(event)) return [];
+    const { screen } = require('electron');
+    const primaryId = String(screen.getPrimaryDisplay().id);
+    const own = new Set(BrowserWindow.getAllWindows().map((w) => { try { return w.getMediaSourceId(); } catch (_) { return ''; } }));
+    let sources = [];
+    try { sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: false }); }
+    catch (err) { console.log('[ScopeDesk] picker: could not list sources: ' + (err && err.message)); return []; }
+    let n = 0;
+    return sources
+      .filter((s) => s && !own.has(s.id) && !(s.id.startsWith('window:') && /^ScopeDesk\b/.test(s.name || '')))   // never ScopeDesk itself
+      .map((s) => {
+        const screenSrc = s.id.startsWith('screen:');
+        return {
+          id: s.id, type: screenSrc ? 'screen' : 'window',
+          name: screenSrc ? `Screen ${++n}${String(s.display_id) === primaryId ? ' (main)' : ''}` : String(s.name || 'Window').slice(0, 80),
+          displayId: screenSrc ? String(s.display_id || '') : '', primary: screenSrc && String(s.display_id) === primaryId,
+          thumbnail: s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : ''
+        };
+      });
+  });
+  ipcMain.handle('sources:select', (event, choice) => {
+    if (!trusted(event) || !choice || typeof choice.id !== 'string') return { ok: false };
+    const { screen } = require('electron');
+    const primaryId = screen.getPrimaryDisplay().id;
+    if (choice.id.startsWith('window:')) {
+      selectedWindowId = choice.id;
+      console.log('[ScopeDesk] picker: one window chosen');
+      return { ok: true, windowOnly: true };
+    }
+    const d = screen.getAllDisplays().find((x) => String(x.id) === String(choice.displayId)) || screen.getPrimaryDisplay();
+    selectedWindowId = null;
+    selectedDisplayId = d.id;
+    console.log(`[ScopeDesk] picker: screen ${d.bounds.width}x${d.bounds.height}${d.id === primaryId ? ' (primary)' : ''}`);
+    return { ok: true, windowOnly: false };
+  });
   ipcMain.handle('display-media:last-denial', (event) => (trusted(event) ? lastDisplayDenial : ''));
 }
 
@@ -177,7 +279,8 @@ function saveDiagnostics() {
     const text = buildReport({
       appVersion: app.getVersion(), versions: process.versions, platform: process.platform, arch: process.arch, packaged: app.isPackaged,
       serverUrl: SERVER_URL, agentDir: AGENT_DIR, exists: (p) => fs.existsSync(p), canResolve,
-      agentStatus: runner ? runner.status() : {}, agentLogs: runner ? runner.logs() : [], lastDisplayDenial
+      agentStatus: runner ? runner.status() : {}, agentLogs: runner ? runner.logs() : [], lastDisplayDenial,
+      accessibilityTrusted: process.platform === 'darwin' ? (() => { try { return systemPreferences.isTrustedAccessibilityClient(false); } catch (_) { return null; } })() : null
     });
     const file = path.join(app.getPath('desktop'), 'ScopeDesk-diagnostics.txt');
     fs.writeFileSync(file, text, 'utf8');

@@ -3,13 +3,27 @@
 //   {"t":"move","x":0.4231,"y":0.1180}                       mouse move (x/y are fractions of the shared screen, 0..1)
 //   {"t":"down"|"up","x":0.42,"y":0.11,"b":0|1|2}            button press/release (0 left, 1 middle, 2 right)
 //   {"t":"wheel","dx":0,"dy":120}                            scroll, in pixels
-//   {"t":"key","k":"KeyA","d":true|false}                    KeyboardEvent.code + pressed/released
+//   {"t":"key","k":"KeyA","d":true|false,"o":"mac"}          KeyboardEvent.code + pressed/released + the vendor's OS (Ctrl/Cmd mapping)
+//   {"t":"text","s":"é"}                                     printable characters: typed as characters on the Client's PC, so a
+//                                                            different keyboard layout or OS cannot turn them into other keys
+//   {"t":"clip","s":"...","o":"win"}                         Ctrl/Cmd+V: the vendor's copied text is pasted on the Client's PC
+//                                                            (vendor -> Client only; the Client's clipboard never comes back)
 // TOUCH (phone/tablet vendor): tap = left click, double tap = double click, long press = right click,
 // one-finger drag = click-and-drag, two-finger drag = scroll.
 // A double-click needs no special event: two quick down/up pairs at the same spot are a double-click to the Client's OS.
 //
 // ScopeDeskInput.attach({ stage, video, send }) -> detach()    `send(event, volatile)` decides how the event travels.
 (function () {
+  const VENDOR_OS = (() => {
+    const p = String((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '').toLowerCase();
+    return /mac|iphone|ipad|ios/.test(p) ? 'mac' : /win/.test(p) ? 'win' : 'linux';
+  })();
+  const MAX_CLIP = 4000;
+  // A printable character (not a shortcut): sent as text. AltGr (Ctrl+Alt on Windows) still produces characters such as @ or €.
+  const isText = (ev) => typeof ev.key === 'string' && [...ev.key].length === 1 && ev.key !== ' ' && ev.key.codePointAt(0) >= 0x20
+    && !ev.metaKey && (!(ev.ctrlKey || ev.altKey) || (ev.getModifierState && ev.getModifierState('AltGraph')));
+  const isPaste = (ev) => ev.code === 'KeyV' && (ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey;
+
   // Position inside the PICTURE, ignoring the black bars around a letterboxed video (object-fit: contain):
   //   scale = min(boxW / videoW, boxH / videoH);   picture = videoW*scale by videoH*scale, centred in the box
   //   x = (clientX - box.left - (boxW - pictureW)/2) / pictureW        y likewise
@@ -31,12 +45,15 @@
 
   function attach({ stage, video, send }) {
     const heldKeys = new Set();
+    const textKeys = new Set();      // keys that were sent as text: their release is not sent
+    let pasteKey = false;            // Ctrl/Cmd+V is turned into a 'clip' event by the paste handler below
     const heldButtons = new Map();   // button -> last known position, so a stuck button can always be released
     let lastMove = 0, lastPos = { x: 0.5, y: 0.5 };
 
     const on = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); return () => target.removeEventListener(type, fn, opts); };
     const releaseAll = () => {
-      heldKeys.forEach((k) => send({ t: 'key', k, d: false }));
+      heldKeys.forEach((k) => send({ t: 'key', k, d: false, o: VENDOR_OS }));
+      textKeys.clear(); pasteKey = false;
       heldButtons.forEach((pos, b) => send({ t: 'up', x: pos.x, y: pos.y, b }));
       heldKeys.clear(); heldButtons.clear();
     };
@@ -114,12 +131,31 @@
       // the two down/up pairs above; forwarding this event too would turn it into a triple click.
       on(stage, 'dblclick', (ev) => ev.preventDefault()),
       on(stage, 'wheel', (ev) => { ev.preventDefault(); const k = ev.deltaMode === 1 ? 40 : 1; send({ t: 'wheel', dx: ev.deltaX * k, dy: ev.deltaY * k }); }, { passive: false }),
-      on(stage, 'keydown', (ev) => { ev.preventDefault(); if (ev.repeat) return; heldKeys.add(ev.code); send({ t: 'key', k: ev.code, d: true }); }),
-      on(stage, 'keyup', (ev) => { ev.preventDefault(); heldKeys.delete(ev.code); send({ t: 'key', k: ev.code, d: false }); }),
+      on(stage, 'keydown', (ev) => {
+        if (ev.isComposing || ev.keyCode === 229) return;                         // IME: the composed text is sent on compositionend
+        if (isPaste(ev)) { pasteKey = true; return; }                              // let the browser fire 'paste' (handled below)
+        ev.preventDefault();
+        if (isText(ev)) { textKeys.add(ev.code); send({ t: 'text', s: ev.key }); return; }   // repeats too: holding a letter types it again
+        if (ev.repeat) return;
+        heldKeys.add(ev.code); send({ t: 'key', k: ev.code, d: true, o: VENDOR_OS });
+      }),
+      on(stage, 'keyup', (ev) => {
+        ev.preventDefault();
+        if (ev.code === 'KeyV' && pasteKey) { pasteKey = false; return; }
+        if (textKeys.delete(ev.code)) return;
+        heldKeys.delete(ev.code); send({ t: 'key', k: ev.code, d: false, o: VENDOR_OS });
+      }),
+      on(stage, 'paste', (ev) => {
+        ev.preventDefault();
+        let text = '';
+        try { text = (ev.clipboardData && ev.clipboardData.getData('text/plain')) || ''; } catch (_) { text = ''; }
+        send({ t: 'clip', s: text.slice(0, MAX_CLIP), o: VENDOR_OS });            // empty = paste whatever the Client's PC has
+      }),
+      on(stage, 'compositionend', (ev) => { const chars = [...String(ev.data || '')]; for (let i = 0; i < chars.length; i += 8) send({ t: 'text', s: chars.slice(i, i + 8).join('') }); }),
       on(stage, 'blur', releaseAll)                  // never leave a key or button stuck down on the Client's PC
     ];
     return () => { releaseAll(); offs.forEach((off) => off()); };
   }
 
-  window.ScopeDeskInput = { attach, mapToVideo };
+  window.ScopeDeskInput = { attach, mapToVideo, VENDOR_OS };
 })();

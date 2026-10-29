@@ -28,7 +28,7 @@ function harness() {
   const socket = { connected: true, on: (ev, fn) => { handlers[ev] = fn; }, emit: (ev, payload, ack) => { sent.push({ ev, payload }); if (ev === 'webrtc-join' && ack) ack({ ok: true, peers: ['vendor'] }); else if (ev === 'agent-status' && ack) ack({ ok: false }); } };
   const stream = { getTracks: () => [{ kind: 'video', stop() {} }], getVideoTracks: () => [{ contentHint: '', getSettings: () => ({}) }] };
   const win = { addEventListener: (ev, fn) => { listeners[ev] = fn; } };
-  const ctx = vm.createContext({ window: win, navigator: { mediaDevices: { getDisplayMedia: async () => stream } }, console: { log() {} }, RTCPeerConnection: FakePC, setTimeout, clearTimeout, Promise, JSON, Date, Math });
+  const ctx = vm.createContext({ window: win, navigator: { mediaDevices: { getDisplayMedia: async () => stream } }, console: { log() {} }, RTCPeerConnection: FakePC, setTimeout, clearTimeout, setInterval: (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); return t; }, clearInterval, Promise, JSON, Date, Math });
   vm.runInContext(SRC, ctx);
   const rtc = win.ScopeDeskRTC;
   let apiCalls = 0;
@@ -109,12 +109,12 @@ test('viewer: a restart offer on the live peer is answered on the same peer; a n
 });
 
 test('the server relays the "restart" signal', () => {
-  assert.match(fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8'), /\['offer', 'answer', 'candidate', 'restart'\]\.includes\(msg\.type\)/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8'), /\['offer', 'answer', 'candidate', 'restart', 'frames'\]\.includes\(msg\.type\)/);
 });
 
 test('a device without getDisplayMedia (phone) gets a plain explanation, not a JavaScript error', async () => {
   const h = harness();
-  const ctx = vm.createContext({ window: { addEventListener() {} }, navigator: { mediaDevices: {} }, console: { log() {} }, RTCPeerConnection: function () {}, setTimeout, clearTimeout, Promise, JSON, Date, Math });
+  const ctx = vm.createContext({ window: { addEventListener() {} }, navigator: { mediaDevices: {} }, console: { log() {} }, RTCPeerConnection: function () {}, setTimeout, clearTimeout, setInterval: (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); return t; }, clearInterval, Promise, JSON, Date, Math });
   vm.runInContext(SRC, ctx);
   ctx.window.ScopeDeskRTC.init({ api: async () => CFG, onChange: () => {} });
   await assert.rejects(() => ctx.window.ScopeDeskRTC.startHost(1), /phone and tablet browsers do not allow it/);

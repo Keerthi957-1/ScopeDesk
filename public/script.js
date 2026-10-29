@@ -1,4 +1,4 @@
-window.SCOPEDESK_BUILD = '2026-10-24-b';
+window.SCOPEDESK_BUILD = '2026-10-29-v9';
 // Safety net: no form on this page may ever submit natively. A native submit reloads the page and looks like a "logout".
 document.addEventListener('submit', (e) => e.preventDefault(), true);
 
@@ -1119,8 +1119,19 @@ document.addEventListener('DOMContentLoaded', () => {
         appsList.parentNode.insertBefore(bar, appsList);
     })();
     renderAppsList();
+    // Apps that reach far beyond one task: a web browser opens the whole internet and every local file (file://), a file manager
+    // without approved folders shows the whole disk. The task can still be created; the Client is told what it means.
+    const WIDE_APPS = new Set(['chrome', 'edge', 'firefox', 'brave', 'safari']);
+    function renderScopeWarning(names) {
+        const el = $('appsScopeWarning');
+        if (!el) return;
+        const wide = names.filter((n) => WIDE_APPS.has(n.toLowerCase()));
+        el.textContent = wide.length ? `${wide.join(', ')}: a web browser lets the vendor open any website and any file on this computer from inside it. Allow it only if the task really needs it.` : '';
+        el.classList.toggle('hidden', !wide.length);
+    }
     function renderAppsSummary() {
         const names = [...selectedApps];
+        renderScopeWarning(names);
         appsToggle.textContent = names.length ? `${names.length} application${names.length > 1 ? 's' : ''} selected` : 'Select applications...';
         appsChips.replaceChildren();
         names.forEach((name) => {
@@ -1190,8 +1201,7 @@ document.addEventListener('DOMContentLoaded', () => {
             resetTaskForm();
             $('newTokenValue').textContent = res.task.token;
             $('newTokenNotice').classList.remove('hidden');
-            startDesktopAgent(false, res.task.id);   // desktop app: the background agent gets this ticket's session config
-            loadTasks();
+            loadTasks();     // remote control is NOT started here: it starts when the Client approves the vendor (share dialog)
         } catch (err) {
             toast(err.message, true);
         } finally {
@@ -1401,8 +1411,10 @@ document.addEventListener('DOMContentLoaded', () => {
             $('remoteWaitText').textContent = 'The remote screen opens in its own window so you have the whole display to work with. Closed it by mistake? Use "Open full-screen workspace".';
         } else {
             // The window could not open: use the screen area inside this page instead
+            // startViewer attaches remote-input.js (mouse + keyboard -> 'ctl'/'mv' data channels, or the server relay). A second
+            // capture (ScopeDeskHub.startVendorCapture) used to be attached here too: it duplicated every listener and sent to channels
+            // the Client's window never reads.
             ScopeDeskRTC.startViewer(task.id, { video: $('remoteVideo'), stage: $('remoteStage') })
-                .then(() => { if (window.ScopeDeskHub && ScopeDeskHub.available) ScopeDeskHub.startVendorCapture({ surface: $('remoteStage'), video: $('remoteVideo') }); })   // mouse + keyboard over the RTCDataChannel
                 .catch((err) => toast(err.message, true));
             $('remoteStage').focus();
         }
@@ -1503,8 +1515,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function clearLive() {
         closeViewport(4000);   // short delay so the Vendor can read why the session ended
+        const endedTaskId = STATE.live && STATE.live.taskId;
         STATE.live = null;
-        if (ScopeDeskDesktop.available) ScopeDeskDesktop.stopAgent();
+        if (ScopeDeskDesktop.available) { if (endedTaskId) ScopeDeskDesktop.endTask(endedTaskId); else ScopeDeskDesktop.stopAgent(); }   // the agent stops and cannot restart for this task
         ScopeDeskRTC.stopBridge();
         syncVendorNav();
         tickClocks();
@@ -1524,41 +1537,49 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         syncAlertsButton();
         renderLiveBar();
-        startDesktopAgent(false);   // desktop app: start the host agent by itself, nothing to copy or run
+        // Remote control is NOT started here. This function runs every time the task list refreshes (many times per session), and
+        // restarting the agent on each refresh is what made the Start/Stop button flip by itself. It starts only when the Client
+        // approves: pressing "Share my screen" in the approval dialog, or "Start remote control".
     }
 
     // ---- Desktop app: the host agent is started through the shell, never by hand ----
-    let desktopAgentOptOut = null;   // task the Client chose to stop remote control for; not restarted automatically
-    function startDesktopAgent(manual, forTaskId) {
+    // Only an explicit action by the Client calls this (approval dialog or the Start button). The desktop app itself refuses to start a
+    // task again after the Client stopped it, the session ended or the agent failed, unless the Client presses Start.
+    let remoteBusy = false, busyTimer = null;
+    function setRemoteBusy(on) {
+        remoteBusy = on;
+        clearTimeout(busyTimer);
+        if (on) busyTimer = setTimeout(() => { remoteBusy = false; renderLiveBar(); }, 4000);   // never leave the button locked
+        renderLiveBar();
+    }
+    // Tells the server the Client's decision (start / stop). The server is the one record of it: after a stop it refuses every input
+    // event for the task, tells the host agent to exit, updates the vendor's screen and writes the reason to the audit log.
+    function sendControlDecision(taskId, action) {
+        return new Promise((resolve) => {
+            const sock = STATE.socket;
+            if (!sock || !sock.connected) return resolve({ ok: false, error: 'Not connected to the ScopeDesk server. Check the internet connection, then try again.' });
+            const timer = setTimeout(() => resolve({ ok: false, error: 'The ScopeDesk server did not answer. Try again.' }), 8000);
+            sock.emit('remote-control', { taskId, action }, (res) => { clearTimeout(timer); resolve(res || { ok: false, error: 'No answer from the server.' }); });
+        });
+    }
+    async function startDesktopAgent(manual, forTaskId) {
         const taskId = forTaskId || (STATE.live && STATE.live.taskId);
-        // New path: the guard, remote-input executor and foreground monitor run inside the desktop app itself (agent/electron-glue.js)
-        if (window.scopedeskHost && typeof window.scopedeskHost.hostStart === 'function' && taskId) {
-            if (!manual && desktopAgentOptOut === taskId) return Promise.resolve();
-            if (manual) desktopAgentOptOut = null;
-            STATE.desktopAgent = { phase: 'starting' }; renderLiveBar();
-            return api(`/api/tasks/${taskId}/agent-token`, { method: 'POST' })
-                .then((r) => window.scopedeskHost.hostStart({ taskId, agentToken: r.agentToken }))
-                .then((r) => {
-                    STATE.desktopAgent = r && r.ok ? { phase: 'running' } : { phase: 'error', error: r && r.error };
-                    renderLiveBar();
-                    if (!(r && r.ok)) toast((r && r.error) || 'Could not start remote control on this computer.', true);
-                })
-                .catch((err) => { STATE.desktopAgent = { phase: 'error', error: err.message }; renderLiveBar(); toast(err.message, true); });
-        }
         if (!ScopeDeskDesktop.available || !taskId) return Promise.resolve();
-        if (!manual && desktopAgentOptOut === taskId) return Promise.resolve();
-        if (manual) desktopAgentOptOut = null;
+        const decision = await sendControlDecision(taskId, 'start');
+        console.log('[ScopeDesk] remote-control start:', decision.ok ? 'approved by the server' : `refused (${decision.error})`, `(task ${taskId})`);
+        if (!decision.ok) { setRemoteBusy(false); toast(`Remote control could not start: ${decision.error}`, true); return; }
         // The session config goes to the background agent through Electron IPC (ipcRenderer.send('init-session')). No dialog, no command.
         return ScopeDeskDesktop.ensureAgent({
             taskId,
+            manual: manual === true,
             getToken: async (id) => (await api(`/api/tasks/${id}/agent-token`, { method: 'POST' })).agentToken,   // stays in memory, never shown
             setToken: () => {}
         }).then((r) => { if (r && r.ok === false && r.error !== 'not-desktop') toast(r.error || 'Could not start the host agent.', true); })
           .catch((err) => toast(err.message, true));
     }
-    ScopeDeskDesktop.onStatus((st) => { STATE.desktopAgent = st; renderLiveBar(); });
+    ScopeDeskDesktop.onStatus((st) => { STATE.desktopAgent = st; remoteBusy = false; clearTimeout(busyTimer); renderLiveBar(); });
 
-    const AGENT_TEXT = { unknown: 'not running', offline: 'not running', starting: 'starting...', error: 'could not start', waiting: `waiting for the approved app`, armed: 'Active Secured Session', locked: 'locked after a violation' };
+    const AGENT_TEXT = { stopped: 'stopped by you (the vendor can only watch)', unknown: 'not running', offline: 'not running', starting: 'starting...', error: 'could not start', waiting: `waiting for the approved app`, armed: 'Active Secured Session', locked: 'locked after a violation', 'view-only': 'view only (this computer is not allowing control)' };
     const SHARE_TEXT = { idle: 'not shared', starting: 'choosing screen...', waiting: 'shared, waiting for vendor', connecting: 'connecting...', live: 'live', lost: 'connection lost, retrying', stopped: 'stopped', closed: 'closed', expired: 'closed (time up)', violation: 'cut after a violation' };
 
     function renderLiveBar() {
@@ -1577,17 +1598,23 @@ document.addEventListener('DOMContentLoaded', () => {
         // In the desktop app the agent reports straight to this window, so the label updates the instant it changes
         const da = STATE.desktopAgent;
         let agentState = v.agent, policyName = v.policy;
-        if (da && da.phase !== 'stopped' && ['unknown', 'offline'].includes(agentState)) { agentState = da.uiState; policyName = policyName || da.policy; }
+        const daMine = !!da && (da.taskId == null || da.taskId === live.taskId);   // a status about another task never drives this bar
+        if (daMine && da.phase !== 'stopped' && ['unknown', 'offline'].includes(agentState)) { agentState = da.uiState; policyName = policyName || da.policy; }
+        if (v.stopped && ['unknown', 'offline'].includes(agentState)) agentState = 'stopped';
         $('liveAgent').textContent = (AGENT_TEXT[agentState] || agentState).replace('the approved app', live.process || 'the approved app')
-            + (policyName && !['unknown', 'offline', 'starting', 'error'].includes(agentState) ? ` (policy: ${policyName}${policyName === '(app only)' ? ', no folder policy found' : ''})` : '')
-            + (agentState === 'error' && da && da.detail ? `: ${da.detail}` : '')
+            + (policyName && !['unknown', 'offline', 'starting', 'error', 'stopped'].includes(agentState) ? ` (policy: ${policyName}${policyName === '(app only)' ? ', no folder policy found' : ''})` : '')
+            + ((agentState === 'error' || agentState === 'waiting' || agentState === 'stopped') && daMine && da.detail ? `: ${da.detail}` : '')
+            + (agentState === 'view-only' && da && da.inputReason ? `: ${da.inputReason}` : '')
             + (!ScopeDeskDesktop.available && ['unknown', 'offline'].includes(agentState) ? ' (you are in a web browser: open the ScopeDesk desktop app so the vendor can control this PC)' : '');
         $('btnPairAgent').classList.toggle('hidden', !ScopeDeskDesktop.available);   // browsers cannot control the PC: desktop app only
         if (ScopeDeskDesktop.available) {
-            const agentOn = da && ['starting', 'connected', 'running'].includes(da.phase);
+            // ONE authoritative state: the desktop app's agent status for this task (sequence-numbered, deduplicated in desktop-bridge.js)
+            const agentOn = daMine && da.taskId === live.taskId && ['starting', 'connected', 'running'].includes(da.phase);
             $('btnPairAgent').textContent = agentOn ? 'Stop remote control' : 'Start remote control';
+            $('btnPairAgent').disabled = remoteBusy;       // one operation at a time: a second click while one is in flight does nothing
         }
         $('btnShareScreen').classList.toggle('hidden', sharing);
+        if ($('btnSwitchScreen')) $('btnSwitchScreen').classList.toggle('hidden', !(sharing && desktopApi));
         if (v.shareSurface && v.shareSurface !== 'monitor') {
             $('liveShare').textContent += ' (window only: remote control needs your entire screen)';
         }
@@ -1602,7 +1629,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (v.halted === 'violation' && v.locked) { msg = ['Locked out', 'Your access ended after a security violation. It cannot be restored in this session.']; b = 'Locked out'; warn = true; }
         else if (v.halted === 'violation') { msg = ['Control suspended', 'An app outside the approved scope was detected. The client has been alerted and decides what happens next.']; b = 'Control suspended'; warn = true; }
         else if (v.conn === 'live') {
-            if (v.agent === 'armed') b = 'Live. Remote control active';
+            if (v.stopped) { b = 'Live view only. The client stopped remote control'; warn = true; }
+            else if (v.agent === 'armed' && v.input === 'none') { b = 'Live. Control not ready'; warn = true; }
+            else if (v.agent === 'armed') b = v.input === 'channel' ? 'Live. Remote control active' : 'Live. Remote control active (via server)';
+            else if (v.agent === 'view-only') { b = "Live view only. The client's computer is not allowing control"; warn = true; }
+            else if (v.agent === 'offline' || v.agent === 'unknown') { b = "Live view only. The client's ScopeDesk has not started remote control yet"; warn = true; }
             else if (v.agent === 'waiting') b = `Live. Waiting for the client to open ${proc}`;
             else if (v.agent === 'locked') { b = 'Live. Control locked'; warn = true; }
             else { b = 'Live view only. The client must use the ScopeDesk desktop app to allow control'; warn = true; }
@@ -1627,7 +1658,7 @@ document.addEventListener('DOMContentLoaded', () => {
         badge.textContent = '● ' + b;
         badge.classList.toggle('text-green', !warn);
         badge.classList.toggle('text-amber', warn);
-        stage.classList.toggle('control-on', v.conn === 'live' && v.agent === 'armed' && !v.halted);
+        stage.classList.toggle('control-on', v.conn === 'live' && v.agent === 'armed' && !v.halted && !v.stopped);
     }
 
     // The vendor's "Remote Desktop" menu entry exists only while a session is running
@@ -1648,6 +1679,12 @@ document.addEventListener('DOMContentLoaded', () => {
         showTerminationOverlay({ taskId: STATE.live ? STATE.live.taskId : null, taskTitle: STATE.live && STATE.live.title, vendor: STATE.live && STATE.live.vendor, kind: d.kind, processName: d.processName, detail: d.detail });
     }
 
+    // The vendor sent a file (only possible into the task's approved folders). The Client always sees where it went.
+    ScopeDeskRTC.onFileResult((r) => {
+        if (!STATE.user || STATE.user.role !== 'client') return;
+        if (r.ok) toast(`The vendor sent "${r.name}". It was saved in ${r.folder}.`);
+        else toast(`A file from the vendor was refused: ${r.error}`, true);
+    });
     ScopeDeskRTC.init({
         api: (path) => api(path),
         isClient: () => !!(STATE.user && STATE.user.role === 'client'),
@@ -1666,9 +1703,62 @@ document.addEventListener('DOMContentLoaded', () => {
         if ($('sharePickerHelp')) $('sharePickerHelp').hidden = desktopApp;
         if ($('shareDesktopHelp')) $('shareDesktopHelp').hidden = !desktopApp;
     }
+    // The approval dialog lists everything the Client approves: vendor, task, approved apps, duration
+    function fillShareScope(taskId, apps, minutes) {
+        const t = STATE.tasks.find((x) => x.id === taskId) || {};
+        const list = (apps && apps.length) ? apps : listOf(t.allowed_apps);
+        if ($('shareApps')) $('shareApps').textContent = list.length ? list.join(', ') : (t.target_process || 'the approved app');
+        if ($('shareDuration')) $('shareDuration').textContent = (minutes || t.duration_minutes) ? `${minutes || t.duration_minutes} minutes` : 'the approved window';
+        if ($('shareTask')) $('shareTask').textContent = t.title || (STATE.live && STATE.live.title) || 'this task';
+    }
+    // SCREEN / WINDOW PICKER (desktop app). Electron has no built-in picker, so the dialog shows tiles for every screen and window
+    // (ScopeDesk itself excluded). Clicking a tile tells the desktop app what to offer; the Share click then captures exactly that
+    // (the choice is made BEFORE the Share click, so that click stays a fresh gesture for the capture).
+    //   screen -> remote control allowed (the host agent maps the vendor's pointer onto that screen)
+    //   window -> watch only (the host agent turns input off and both screens say why)
+    var desktopApi = window.scopedeskDesktop && window.scopedeskDesktop.isDesktop && typeof window.scopedeskDesktop.listSources === 'function' ? window.scopedeskDesktop : null;
+    var displays = [];             // screens only (var: renderLiveBar, declared earlier, may run before this line)
+    let pickedSource = null;
+    async function selectSource(src) {
+        pickedSource = src;
+        document.querySelectorAll('#sharePicker button.tile').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.id === src.id)));
+        const note = $('sharePickerNote');
+        if (note) note.textContent = src.type === 'window' ? 'One window: the vendor can watch it but cannot control your computer. Choose a screen to allow control.' : '';
+        try { await desktopApi.selectSource(src); } catch (_) { /* the main screen is used */ }
+    }
+    async function loadSources() {
+        const box = $('sharePicker');
+        if (!desktopApi || !box) return [];
+        let list = [];
+        try { list = (await desktopApi.listSources()) || []; } catch (_) { list = []; }
+        displays = list.filter((x) => x.type === 'screen');
+        const group = (title, items) => {
+            if (!items.length) return [];
+            const h = document.createElement('h4'); h.textContent = title;
+            const grid = document.createElement('div'); grid.className = 'tiles';
+            items.forEach((src) => {
+                const b = document.createElement('button');
+                b.type = 'button'; b.className = 'tile'; b.dataset.id = src.id; b.setAttribute('aria-pressed', 'false');
+                if (src.thumbnail) { const img = document.createElement('img'); img.alt = ''; img.src = src.thumbnail; b.appendChild(img); }
+                const label = document.createElement('span'); label.textContent = src.name; label.title = src.name; b.appendChild(label);
+                b.addEventListener('click', () => selectSource(src));
+                grid.appendChild(b);
+            });
+            return [h, grid];
+        };
+        box.replaceChildren(...group('Screens (vendor can control)', displays), ...group('Windows (vendor can only watch)', list.filter((x) => x.type === 'window')));
+        box.hidden = list.length === 0;
+        const keep = pickedSource && list.find((x) => x.id === pickedSource.id);
+        const first = keep || displays.find((d) => d.primary) || displays[0] || list[0];
+        if (first) await selectSource(first);
+        renderLiveBar();
+        return list;
+    }
     function openShareModal(d) {
         if (STATE.user.role !== 'client') return;
         syncShareHelp();
+        loadSources();
+        fillShareScope(d.taskId, d.allowedApps, d.durationMinutes || d.duration);
         $('shareVendor').textContent = d.vendor || 'The vendor';
         $('shareProcess').textContent = d.targetProcess || 'the approved app';
         $('shareError').classList.add('hidden');
@@ -1676,9 +1766,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     async function shareNow() {
         if (!STATE.live) return toast('There is no active session to share.', true);
+        // Already sharing ("Change what I share"): swap the picture on the live connection, no reconnect
+        const cur = ScopeDeskRTC.current();
+        if (cur.role === 'host' && cur.taskId === STATE.live.taskId) {
+            try { await ScopeDeskRTC.switchScreen(); $('shareModal').classList.remove('open'); toast(pickedSource && pickedSource.type === 'window' ? 'Now sharing one window (the vendor can only watch).' : 'Now sharing the screen you chose.'); }
+            catch (err) { $('shareError').textContent = `Could not change what is shared: ${err.message}`; $('shareError').classList.remove('hidden'); }
+            return;
+        }
         try {
             await ScopeDeskRTC.startHost(STATE.live.taskId);
             $('shareModal').classList.remove('open');
+            // Pressing "Share my screen" in this dialog IS the Client's approval of the vendor, the task, control of mouse and keyboard
+            // and the time window (the dialog lists all of them). Remote control starts now, once, and never by itself afterwards.
+            startDesktopAgent(true);
         } catch (err) {
             $('shareError').textContent = err.message;
             $('shareError').classList.remove('hidden');
@@ -1686,7 +1786,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     $('btnConfirmShare').addEventListener('click', shareNow);
-    $('btnShareScreen').addEventListener('click', () => { syncShareHelp(); $('shareError').classList.add('hidden'); $('shareProcess').textContent = STATE.live.process; $('shareVendor').textContent = STATE.live.vendor; $('shareModal').classList.add('open'); });
+    if ($('btnSwitchScreen')) $('btnSwitchScreen').addEventListener('click', () => { syncShareHelp(); loadSources(); $('shareError').classList.add('hidden'); $('shareModal').classList.add('open'); });
+    $('btnShareScreen').addEventListener('click', () => { syncShareHelp(); loadSources(); fillShareScope(STATE.live.taskId, null, STATE.live.durationMinutes); $('shareError').classList.add('hidden'); $('shareProcess').textContent = STATE.live.process; $('shareVendor').textContent = STATE.live.vendor; $('shareModal').classList.add('open'); });
     $('btnLiveTerminate').addEventListener('click', () => { if (STATE.live && confirm('End the session now? The vendor is disconnected immediately.')) terminateTask(STATE.live.taskId); });
 
     $('btnEnableAlerts').addEventListener('click', async () => {
@@ -1694,15 +1795,22 @@ document.addEventListener('DOMContentLoaded', () => {
         syncAlertsButton();
     });
     // One button in the desktop app starts or stops remote control. There is no pairing dialog and nothing to copy.
+    // The label follows the real state (STATE.desktopAgent, from the desktop app); this handler only sends the request.
     $('btnPairAgent').addEventListener('click', async () => {
-        if (!STATE.live || !(ScopeDeskDesktop.available || window.scopedeskHost)) return;
+        if (!STATE.live || !ScopeDeskDesktop.available || remoteBusy) return;
         const da = STATE.desktopAgent;
-        if (da && ['starting', 'connected', 'running'].includes(da.phase)) {
-            desktopAgentOptOut = STATE.live.taskId;
-            if (window.scopedeskHost) { await window.scopedeskHost.hostStop(); STATE.desktopAgent = { phase: 'offline' }; renderLiveBar(); }
-            else ScopeDeskDesktop.stopAgent();
+        const taskId = STATE.live.taskId;
+        const running = !!da && da.taskId === taskId && ['starting', 'connected', 'running'].includes(da.phase);
+        setRemoteBusy(true);
+        try {
+            if (running) {
+                await ScopeDeskDesktop.stopAgent();                   // Stop: this PC refuses further input at once, never restarted by itself
+                const r = await sendControlDecision(taskId, 'stop');  // server refuses relayed input, vendor screen updates, reason recorded
+                if (!r.ok) toast(`Remote control is off on this computer, but the server was not told: ${r.error}`, true);
+            } else await startDesktopAgent(true);                     // Start: only the Client's click gets here
+        } finally {
+            // the real state arrives from the desktop app; the busy lock is released by that event (or after 4 s)
         }
-        else await startDesktopAgent(true);
     });
 
     // Vendor: ask the client's PC to open a folder. The client's agent checks it against the approved folders (case-insensitive).

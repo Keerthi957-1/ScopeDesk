@@ -58,8 +58,10 @@ test('input() reaches the agent only during a session and only as a short string
   r.warm();
   assert.strictEqual(r.input('{"t":"move","x":0.5,"y":0.5}'), false);   // standby: nothing to control yet
   r.init({ taskId: 1, token: 'a.b.c' });
+  assert.strictEqual(r.input('{"t":"move","x":0.5,"y":0.5}'), false);   // started but the agent is not ready yet: nothing is executed
+  forkFn.calls[0].child.emit('message', { type: 'state', state: 'armed', policy: 'p' });
   assert.strictEqual(r.input('{"t":"move","x":0.5,"y":0.5}'), true);
-  assert.strictEqual(r.input('x'.repeat(601)), false);
+  assert.strictEqual(r.input('x'.repeat(20001)), false);
   assert.strictEqual(r.input({ t: 'move' }), false);
   assert.deepStrictEqual(forkFn.calls[0].child.sent.at(-1), { type: 'input', data: '{"t":"move","x":0.5,"y":0.5}' });
   r.freeze();

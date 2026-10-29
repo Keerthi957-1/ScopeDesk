@@ -8,7 +8,7 @@
     "dev": "node --watch server.js",
     "setup-email": "node setup-email.js",
     "find-alerts": "node tools/find-alerts.js",
-    "test": "node --test \"server/test/*.test.js\"",
+    "test": "node --test \"server/test/*.test.js\" \"test/*.test.js\"",
     "test:all": "npm test && npm --prefix desktop test && npm --prefix agent test",
     "desktop": "npm --prefix desktop start",
     "desktop:build": "npm --prefix desktop install --no-audit --no-fund && npm --prefix desktop run build",
